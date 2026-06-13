@@ -1,0 +1,1437 @@
+// ==UserScript==
+// @name         Steam Badge Helper
+// @name:zh-CN   Steam 徽章助手
+// @version      0.8.0
+// @description  Scan badges, find & buy cheap trading card sets via buylisting
+// @description:zh-CN 扫描徽章，寻找低价卡牌套组，通过 buylisting 购买缺失卡牌
+// @author       SpaceSyt
+// @include      http*://steamcommunity.com/*/badges*
+// @include      http*://steamcommunity.com/id/*/badges*
+// @include      http*://steamcommunity.com/profiles/*/badges*
+// @grant        GM_addStyle
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        unsafeWindow
+// @license      MIT
+// ==/UserScript==
+
+(() => {
+  "use strict";
+
+  const $J = unsafeWindow.jQuery || unsafeWindow.$;
+  if (!$J) {
+    console.warn("[SBC] jQuery not found");
+    return;
+  }
+
+  // ============================================================
+  // Constants
+  // ============================================================
+  const DEFAULT_CONFIG = {
+    threshold: 10,
+    buffer: 1,
+    scanInterval: 800,
+    requestInterval: 1200,
+    batchSize: 20,
+    batchPause: 15000,
+    includeDrops: false,
+    maxBadgePages: 10,
+    blacklist: "",
+  };
+
+  const CURRENCY_CNY = 23;
+
+  // ============================================================
+  // Config
+  // ============================================================
+  function loadConfig() {
+    try {
+      const raw = GM_getValue("sbc_config", null);
+      if (raw) return { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
+    } catch (e) {
+      console.warn("[SBC] Config load failed:", e);
+    }
+    return { ...DEFAULT_CONFIG };
+  }
+
+  function saveConfig(cfg) {
+    GM_setValue("sbc_config", JSON.stringify(cfg));
+  }
+
+  function getSessionId() {
+    if (unsafeWindow.g_sessionID) return unsafeWindow.g_sessionID;
+    const match = document.cookie.match(/sessionid=([^;]+)/);
+    return match ? decodeURIComponent(match[1]) : null;
+  }
+
+  function getProfileUrl() {
+    if (unsafeWindow.g_strProfileURL) return unsafeWindow.g_strProfileURL;
+    const a = document.querySelector("#global_actions a.user_avatar");
+    return a ? a.href.replace(/\/$/, "") : null;
+  }
+
+  function getWalletCurrency() {
+    if (unsafeWindow.g_rgWalletInfo && typeof unsafeWindow.g_rgWalletInfo.wallet_currency === "number") {
+      return unsafeWindow.g_rgWalletInfo.wallet_currency;
+    }
+    return CURRENCY_CNY;
+  }
+
+  function formatCNY(cents) {
+    if (cents == null || isNaN(cents)) return "?";
+    return (cents / 100).toFixed(2);
+  }
+
+  // ============================================================
+  // Request Queue
+  // ============================================================
+  class RequestQueue {
+    constructor(interval = 300, batchSize = 18, batchPause = 3500, state = null, onStatus = null) {
+      this.interval = interval;
+      this.batchSize = batchSize;
+      this.batchPause = batchPause;
+      this.state = state;
+      this.onStatus = onStatus;
+      this.queue = [];
+      this.running = false;
+      this.stopped = false;
+      this._consecutive429 = 0;
+      this._reqCount = 0;
+    }
+
+    async fetch(url, options = {}) {
+      return new Promise((resolve, reject) => {
+        if (this.stopped) { reject({ status: 0, error: "stopped" }); return; }
+        this.queue.push({ url, options, resolve, reject });
+        this._run();
+      });
+    }
+
+    async _run() {
+      if (this.running) return;
+      this.running = true;
+      try {
+        while (this.queue.length > 0 && !this.stopped) {
+          const job = this.queue.shift();
+          try {
+            const res = await window.fetch(job.url, {
+              credentials: "include",
+              ...job.options,
+            });
+
+            if (res.status === 429) {
+              this._consecutive429++;
+              this.queue.unshift(job);
+              const backoff = [20000, 45000, 90000, 180000, 360000][this._consecutive429 - 1] || 360000;
+              if (this.onStatus) this.onStatus(`限流冷却中 (第${this._consecutive429}次, ${(backoff/1000).toFixed(0)}s)`, true);
+              for (let tick = 0; tick < backoff / 500; tick++) {
+                await new Promise(r => setTimeout(r, 500));
+                if (this.stopped) break;
+                if (this.state?.skipCurrent || this.state?.stopRequested) break;
+              }
+              if (this.state?.skipCurrent) {
+                this.state.skipCurrent = false;
+                job.reject({ status: 429, error: "skipped by user" });
+                continue;
+              }
+              if (this.state?.stopRequested || this.stopped) {
+                job.reject({ status: 0, error: "stopped" });
+                continue;
+              }
+              continue;
+            }
+            this._consecutive429 = 0;
+            if (this.onStatus) this.onStatus("扫描卡牌价格中", true);
+
+            if (res.status >= 500) {
+              await new Promise(r => setTimeout(r, this.interval * 3));
+            }
+
+            const text = await res.text();
+            let data = null;
+            try { data = JSON.parse(text); } catch (_) {}
+
+            if (!res.ok) {
+              job.reject({ status: res.status, text, data });
+            } else {
+              job.resolve({ status: res.status, text, data });
+            }
+          } catch (e) {
+            job.reject({ error: e?.message || String(e) });
+          }
+
+          // adaptive delay: after N fast requests, pause to avoid rate limit
+          this._reqCount++;
+          if (this._reqCount >= this._batchSize) {
+            this._reqCount = 0;
+            await new Promise(r => setTimeout(r, this.batchPause));
+          } else {
+            await new Promise(r => setTimeout(r, this.interval));
+          }
+        }
+      } finally {
+        this.running = false;
+      }
+
+      if (this.queue.length > 0 && !this.stopped) this._run();
+    }
+
+    stop() {
+      this.stopped = true;
+      // reject all pending jobs so their promises resolve and loops can exit
+      for (const job of this.queue) {
+        if (job.reject) job.reject({ status: 0, error: "stopped" });
+      }
+      this.queue = [];
+    }
+    clear() { this.queue = []; }
+  }
+
+  // ============================================================
+  // Scanner (Phase 1: quick scan badges list)
+  // ============================================================
+  async function scanBadgePages(cfg, onProgress, queue) {
+    const profileUrl = getProfileUrl();
+    if (!profileUrl) throw new Error("Profile URL not found");
+
+    // detect current sort from URL, default to "p" (in progress)
+    const curUrl = new URL(window.location.href);
+    const curSort = curUrl.searchParams.get("sort") || "p";
+
+    const candidates = [];
+    const seen = new Set();
+    const perPage = 150;
+
+    for (let page = 1; page <= cfg.maxBadgePages; page++) {
+      const rangeStart = (page - 1) * perPage + 1;
+      const rangeEnd = page * perPage;
+      onProgress?.(`正在扫描徽章 ${rangeStart}-${rangeEnd} (页${page})...`);
+      const url = `${profileUrl}/badges/?sort=${curSort}&p=${page}`;
+      const res = await queue.fetch(url);
+      if (!res || !res.text) {
+        if (page === 1) throw new Error(`Failed to fetch badges: ${res?.status}`);
+        break;
+      }
+      const doc = new DOMParser().parseFromString(res.text, "text/html");
+
+      const rows = doc.querySelectorAll(".badge_row");
+      const actualEnd = Math.min(rangeEnd, rangeStart + rows.length - 1);
+      if (rows.length === 0) break;
+
+      let pageCandidateCount = 0;
+
+      for (const row of rows) {
+        const overlay = row.querySelector(".badge_row_overlay");
+        if (!overlay) continue;
+        const href = overlay.getAttribute("href") || "";
+
+        // extract appid from /gamecards/{appid}/ or /badges/{appid}/
+        const m = href.match(/\/(?:gamecards|badges)\/(\d+)\/?(\?|$)/);
+        if (!m) continue;
+        const appid = m[1];
+        const isFoil = href.includes("border=1");
+        const key = `${appid}_${isFoil ? 1 : 0}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        // skip completed badges (no card progress shown)
+        const progressEl = row.querySelector(".badge_progress_info");
+        if (!progressEl) continue;
+        const progressText = progressEl.textContent.trim();
+        // "已收集 X / Y 张卡牌" or "Collected X / Y cards"
+        const countMatch = progressText.match(/(\d+)\s*\/\s*(\d+)/);
+        if (!countMatch) continue;
+        const owned = parseInt(countMatch[1], 10);
+        const totalInSet = parseInt(countMatch[2], 10);
+
+        // only keep badges with partial progress (have SOME cards, but NOT all)
+        if (owned === 0 || owned >= totalInSet) continue;
+
+        // game name
+        const titleEl = row.querySelector(".badge_title");
+        let gameName = "";
+        if (titleEl) {
+          gameName = (titleEl.querySelector(".badge_title_row")?.textContent
+            || titleEl.textContent)
+            .replace(/(?:View details|查看详情|[\u200B\u200C\u200D\ufeff])/gi, "")
+            .trim();
+        }
+
+        // drops remaining
+        let dropsRemaining = 0;
+        const dropsEl = row.querySelector(".progress_info_bold");
+        if (dropsEl) {
+          const dt = dropsEl.textContent;
+          const dm = dt.match(/(\d+)\s*(?:张剩余卡牌掉落|card drops? remaining)/i);
+          if (dm) dropsRemaining = parseInt(dm[1], 10);
+        }
+
+        candidates.push({ appid, isFoil, gameName, owned, totalInSet, dropsRemaining });
+        pageCandidateCount++;
+      }
+
+      onProgress?.(`徽章 ${rangeStart}-${actualEnd}: ${pageCandidateCount} 个有未完成进度 (共 ${rows.length} 个徽章)`);
+
+      const nextLink = doc.querySelector(`a.pagebtn[href*="p=${page + 1}"]`);
+      if (!nextLink) break;
+
+      await new Promise(r => setTimeout(r, cfg.scanInterval));
+    }
+
+    onProgress?.(`徽章列表扫描完成, 共 ${candidates.length} 个有未完成进度`);
+    return candidates;
+  }
+
+  // ============================================================
+  // Game Cards Parser
+  // ============================================================
+  function parseGameCardsHtml(html, appid, isFoil) {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+
+    // game name from title
+    let gameName = "";
+    const titleEl = doc.querySelector(".badge_title");
+    if (titleEl) {
+      gameName = (titleEl.querySelector(".badge_title_row")?.textContent || titleEl.textContent)
+        .replace(/(?:View badge progress|查看徽章进度|View details|查看详情|[\u200B\u200C\u200D\ufeff])/gi, "")
+        .replace(/徽章$/i, "").trim();
+    }
+
+    // level from meta description: "徽章（0 级）" or "Badge (Level 0)"
+    let level = 0;
+    const metaDesc = doc.querySelector('meta[name="Description"]')?.content || "";
+    const lm = metaDesc.match(/(?:徽章[（(](\d+)\s*级|Badge\s*\(Level\s*(\d+)\))/i);
+    if (lm) level = parseInt(lm[1] || lm[2], 10);
+
+    // drops remaining
+    let dropsRemaining = 0;
+    const progressBold = doc.querySelector(".progress_info_bold");
+    if (progressBold) {
+      const txt = progressBold.textContent;
+      const dm = txt.match(/(\d+)\s*card drops?\s*remaining/i) || txt.match(/(\d+)\s*张剩余卡牌掉落/);
+      if (dm) dropsRemaining = parseInt(dm[1], 10);
+    }
+
+    // Parse card info from badge_card_set_card: name + owned count (IN ORDER)
+    const cardSetCards = doc.querySelectorAll(".badge_card_set_card");
+    const cardList = [];
+    cardSetCards.forEach((el, idx) => {
+      const titleNode = el.querySelector(".badge_card_set_title");
+      if (!titleNode) return;
+      const qtyNode = el.querySelector(".badge_card_set_text_qty");
+      const owned = qtyNode ? (parseInt(qtyNode.textContent.replace(/[()（）\[\]]/g, ""), 10) || 0) : 0;
+      let name = titleNode.textContent.trim();
+      if (qtyNode) {
+        name = name.replace(qtyNode.textContent, "").trim();
+      }
+      cardList.push({ name, owned, marketHashName: "", idx });
+    });
+
+    // Primary: match market hash names from multibuy URL (has ALL cards, IN ORDER)
+    const multibuyBtn = doc.querySelector('a[href*="multibuy"]');
+    if (multibuyBtn) {
+      const mbHref = multibuyBtn.getAttribute("href") || "";
+      let items = [];
+      try {
+        const mbUrl = new URL(mbHref, window.location.origin);
+        items = mbUrl.searchParams.getAll("items[]");
+      } catch (_) {
+        const m = mbHref.match(/[?&]items\[\]=([^&]+)/g) || [];
+        items = m.map(s => {
+          try { return decodeURIComponent(s.replace(/[?&]items\[\]=/, "").replace(/&$/, "")); } catch (_) { return s; }
+        });
+      }
+      for (let i = 0; i < Math.min(items.length, cardList.length); i++) {
+        cardList[i].marketHashName = items[i];
+      }
+    }
+
+    // Secondary: badge_card_to_collect links (fills any gaps)
+    const toCollect = doc.querySelectorAll(".badge_card_to_collect");
+    toCollect.forEach(tc => {
+      const titleNode = tc.querySelector(".badge_card_set_title");
+      const marketLink = tc.querySelector('a[href*="/market/listings/"]');
+      if (!titleNode || !marketLink) return;
+      const name = titleNode.textContent.trim();
+      const href = marketLink.getAttribute("href") || "";
+      const m = href.match(/\/market\/listings\/\d+\/(.+?)(?:\?|$)/);
+      if (!m) return;
+      let mhn = "";
+      try { mhn = decodeURIComponent(m[1]); } catch (_) { mhn = m[1]; }
+      // find card by name and fill if missing
+      for (const card of cardList) {
+        if (card.name === name && !card.marketHashName) {
+          card.marketHashName = mhn;
+          break;
+        }
+      }
+    });
+    const totalInSet = cardList.length;
+    if (totalInSet === 0) {
+      return { gameName, level, totalInSet: 0, dropsRemaining, cards: cardList, need: 0, setsToLevel5: 0 };
+    }
+
+    // single set calculation
+    const cappedOwned = cardList.reduce((sum, c) => sum + Math.min(c.owned, 1), 0);
+    const need = Math.max(0, totalInSet - cappedOwned);
+    const setsToLevel5 = Math.max(0, 5 - level);
+
+    return {
+      gameName,
+      level,
+      totalInSet,
+      dropsRemaining,
+      cards: cardList,
+      need,
+      setsToLevel5,
+    };
+  }
+  // ============================================================
+  function parsePrice(str) {
+    if (!str) return 0;
+    const n = parseFloat(str.replace(/[^0-9.,]/g, "").replace(",", "."));
+    return isNaN(n) ? 0 : Math.round(n * 100);
+  }
+
+  async function priceCard(marketHashName, queue) {
+    try {
+      const url = `https://steamcommunity.com/market/priceoverview/?appid=753&currency=23&market_hash_name=${encodeURIComponent(marketHashName)}`;
+      const res = await queue.fetch(url);
+
+      if (!res?.data?.success) {
+        return null;
+      }
+
+      const lowestCents = parsePrice(res.data.lowest_price);
+      if (!lowestCents) return null;
+
+      const medianCents = parsePrice(res.data.median_price);
+      const volume = parseInt(res.data.volume, 10) || 0;
+
+      return { lowestSellCents: lowestCents, medianCents, volume };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // ============================================================
+  // Buylisting
+  // ============================================================
+  async function findListingId(marketHashName, maxPriceCents, queue) {
+    const url = `https://steamcommunity.com/market/listings/753/${encodeURIComponent(marketHashName)}/render?start=0&count=30&currency=${getWalletCurrency()}`;
+    const res = await queue.fetch(url);
+
+    if (!res || !res.text) return null;
+
+    const matchHtml = res.text.match(/"listinginfo"\s*:\s*(\{[\s\S]*?"total_count"\s*:\s*\d+[\s\S]*?\})/);
+    let listingInfoJson = null;
+    if (matchHtml) {
+      try { listingInfoJson = JSON.parse(matchHtml[1]); } catch (_) {}
+      if (listingInfoJson && listingInfoJson.listinginfo) {
+        const ids = Object.keys(listingInfoJson.listinginfo);
+        for (const id of ids) {
+          const info = listingInfoJson.listinginfo[id];
+          const price = info.converted_price_with_fees || info.price_with_fees;
+          if (price != null && price <= maxPriceCents) {
+            return id;
+          }
+        }
+      }
+    }
+
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(res.text, "text/html");
+    const rows = doc.querySelectorAll(".market_listing_row");
+    for (const row of rows) {
+      const rowId = row.getAttribute("id") || "";
+      const listingMatch = rowId.match(/(?:listing_|mylisting_)(\d+)/);
+      if (!listingMatch) continue;
+
+      const priceEl = row.querySelector(".market_listing_price.market_listing_price_with_fee");
+      if (!priceEl) continue;
+      const priceText = priceEl.textContent;
+      const cents = parsePriceToCents(priceText);
+      if (cents != null && cents <= maxPriceCents) {
+        return listingMatch[1];
+      }
+    }
+
+    return null;
+  }
+
+  function parsePriceToCents(priceText) {
+    if (!priceText) return null;
+    const cleaned = priceText.replace(/[^\d.,]/g, "").replace(/,/g, "");
+    if (!cleaned) return null;
+    const parts = cleaned.split(".");
+    let main = parts[0] || "0";
+    let sub = parts[1] || "0";
+    sub = sub.substring(0, 2).padEnd(2, "0");
+    const cents = parseInt(main, 10) * 100 + parseInt(sub, 10);
+    return isNaN(cents) ? null : cents;
+  }
+
+  async function buyListing(listingId, priceCents, queue) {
+    const sessionId = getSessionId();
+    const currency = getWalletCurrency();
+
+    const body = new URLSearchParams({
+      sessionid: sessionId || "",
+      listingid: listingId,
+      currency: String(currency),
+      subtotal: String(priceCents),
+      fee: "0",
+      quantity: "1",
+    });
+
+    const res = await queue.fetch("https://steamcommunity.com/market/buylisting/", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+      body: body.toString(),
+    });
+
+    return { status: res.status, data: res.data };
+  }
+
+  // ============================================================
+  // CSS
+  // ============================================================
+  GM_addStyle(`
+    .sbc-btn-entry {
+      display: inline-block;
+      padding: 6px 12px;
+      margin-left: 10px;
+      background: rgba(67, 137, 179, 0.85);
+      color: #fff;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .sbc-btn-entry:hover { background: rgba(87, 157, 199, 1); }
+
+    #sbc-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 10000;
+      display: none;
+    }
+    #sbc-modal {
+      position: fixed;
+      left: 50%; top: 20px;
+      transform: translateX(-50%);
+      width: 1060px; max-width: 95vw;
+      height: 92vh;
+      background: #1b2838;
+      color: #c6d4df;
+      z-index: 10001;
+      border-radius: 4px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      font-family: "Motiva Sans", Arial, sans-serif;
+      font-size: 14px;
+      box-shadow: 0 0 30px rgba(0,0,0,0.6);
+    }
+    #sbc-modal .sbc-header {
+      padding: 10px 16px;
+      border-bottom: 1px solid #45556b;
+      display: flex;
+      align-items: center;
+      background: #171a21;
+    }
+    #sbc-modal .sbc-header h2 {
+      margin: 0; font-size: 20px; flex: 1; color: #fff;
+    }
+    #sbc-modal .sbc-close {
+      cursor: pointer; font-size: 22px; color: #8f98a0;
+    }
+    #sbc-modal .sbc-close:hover { color: #fff; }
+    #sbc-modal .sbc-body {
+      flex: 1; overflow-y: hidden; padding: 12px 16px;
+      display: flex; flex-direction: column;
+      min-height: 0;
+    }
+    #sbc-modal .sbc-footer {
+      padding: 10px 16px;
+      background: #171a21;
+      border-top: 1px solid #45556b;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      font-size: 13px;
+    }
+    .sbc-input {
+      background: #0e1621;
+      color: #fff;
+      border: 1px solid #45556b;
+      padding: 5px 8px;
+      border-radius: 2px;
+      width: 80px;
+      font-size: 14px;
+    }
+    .sbc-input:focus { border-color: #66c0f4; outline: none; }
+    .sbc-label { font-size: 14px; color: #8f98a0; }
+    .sbc-btn {
+      padding: 8px 16px;
+      background: linear-gradient(to bottom, #75b022 5%, #588a1b 95%);
+      color: #fff;
+      border-radius: 2px;
+      cursor: pointer;
+      font-size: 15px;
+      user-select: none;
+    }
+    .sbc-btn:hover { background: linear-gradient(to bottom, #8ed629 5%, #6aa621 95%); }
+    .sbc-btn.disabled {
+      background: #2a3f5a;
+      color: #667;
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+    .sbc-btn.alt {
+      background: linear-gradient(to bottom, #67c1f5 5%, #417a9b 95%);
+    }
+    .sbc-btn.alt:hover {
+      background: linear-gradient(to bottom, #8ed8ff 5%, #5297b7 95%);
+    }
+
+    .sbc-game-list {
+      max-height: 30vh;
+      overflow-y: auto;
+      border: 1px solid #2a3f5a;
+      border-radius: 3px;
+      background: rgba(0,0,0,0.2);
+    }
+    .sbc-game-row {
+      padding: 6px 14px;
+      border-bottom: 1px solid rgba(69,85,107,0.4);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+    .sbc-row-header {
+      color: #8f98a0;
+      font-size: 12px;
+      font-weight: bold;
+      border-bottom: 2px solid #45556b;
+      padding-bottom: 6px;
+      margin-bottom: 2px;
+    }
+    .sbc-game-row:hover { background: rgba(103,193,245,0.08); }
+    .sbc-game-row .sbc-appid {
+      width: 50px;
+      flex-shrink: 0;
+      color: #66c0f4;
+      font-family: monospace;
+      font-size: 12px;
+    }
+    .sbc-game-row .sbc-name {
+      flex: 1;
+      color: #e2e2e2;
+      font-size: 13px;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .sbc-game-row .sbc-level {
+      width: 50px;
+      flex-shrink: 0;
+      color: #a1b053;
+      font-size: 12px;
+      text-align: center;
+    }
+    .sbc-game-row .sbc-cards {
+      width: 40px;
+      flex-shrink: 0;
+      color: #c6d4df;
+      font-size: 12px;
+      text-align: center;
+    }
+    .sbc-game-row .sbc-cost {
+      width: 75px;
+      flex-shrink: 0;
+      color: #75b022;
+      font-weight: bold;
+      font-size: 13px;
+      text-align: right;
+    }
+    .sbc-game-row .sbc-full {
+      width: 80px;
+      flex-shrink: 0;
+      color: #ffc902;
+      font-size: 12px;
+      text-align: right;
+    }
+    .sbc-game-row .sbc-lv5 {
+      width: 80px;
+      flex-shrink: 0;
+      color: #e74c3c;
+      font-size: 12px;
+      text-align: right;
+    }
+    .sbc-game-row .sbc-buf {
+      display: none;
+    }
+    .sbc-game-row .sbc-drops {
+      width: 55px;
+      flex-shrink: 0;
+      color: #8db7d7;
+      font-size: 12px;
+      text-align: center;
+    }
+    .sbc-game-row .sbc-select {
+      width: 30px;
+      flex-shrink: 0;
+      text-align: center;
+    }
+    .sbc-game-row .sbc-actions {
+      display: none;
+    }
+
+    .sbc-toolbar {
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+      font-size: 14px;
+      color: #8f98a0;
+    }
+    .sbc-toolbar label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+    .sbc-primary-label { color: #fff !important; font-weight: bold; }
+
+    .sbc-status-text { color: #8db7d7; font-size: 13px; padding: 6px 0; min-height: 20px; }
+
+    .sbc-game-row.sbc-selected { background: rgba(120,170,255,0.12); }
+    .sbc-select-all { cursor: pointer; user-select: none; margin-left: 2px; }
+    .sbc-row-cb { cursor: pointer; width: 16px; height: 16px; accent-color: #75b022; }
+
+    #sbc-log {
+      margin-top: 10px;
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      background: #0e1621;
+      border-radius: 3px;
+      padding: 10px;
+      font-family: "Courier New", monospace;
+      font-size: 13px;
+      line-height: 1.5;
+      color: #b0c3d9;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    #sbc-log .ok { color: #75b022; }
+    #sbc-log .warn { color: #ffc902; }
+    #sbc-log .err { color: #c04040; }
+    #sbc-log .info { color: #67c1f5; }
+
+    .sbc-progress {
+      height: 20px;
+      background: #0e1621;
+      border-radius: 2px;
+      overflow: hidden;
+      margin: 8px 0;
+      position: relative;
+    }
+    .sbc-progress-bar {
+      height: 100%;
+      background: linear-gradient(to right, #75b022, #8ed629);
+      transition: width 0.2s;
+    }
+    .sbc-progress-text {
+      position: absolute;
+      inset: 0;
+      text-align: center;
+      font-size: 13px;
+      line-height: 20px;
+      color: #fff;
+    }
+
+    .sbc-summary {
+      font-size: 14px;
+      color: #8f98a0;
+      margin: 8px 0;
+    }
+    .sbc-summary b { color: #fff; }
+  `);
+
+  // ============================================================
+  // UI
+  // ============================================================
+  function injectEntryBtn() {
+    const target = document.querySelector(".profile_xp_block")
+      || document.querySelector(".badges_header")
+      || document.body;
+
+    const btn = document.createElement("span");
+    btn.className = "sbc-btn-entry";
+    btn.textContent = "徽章卡牌购买助手";
+    btn.addEventListener("click", openModal);
+
+    if (target.classList.contains("profile_xp_block")) {
+      target.appendChild(btn);
+    } else {
+      target.insertBefore(btn, target.firstChild);
+    }
+  }
+
+  let modalEl = null;
+  const state = {
+    cfg: loadConfig(),
+    results: [],
+    selected: new Set(),
+    scanning: false,
+    buying: false,
+    stopRequested: false,
+    skipCurrent: false,
+    queue: null,
+  };
+
+  function openModal() {
+    if (modalEl) { modalEl.style.display = ""; return; }
+    buildModal();
+  }
+
+  function buildModal() {
+    const backdrop = document.createElement("div");
+    backdrop.id = "sbc-backdrop";
+    backdrop.style.display = "block";
+    backdrop.addEventListener("click", closeModal);
+    document.body.appendChild(backdrop);
+
+    const modal = document.createElement("div");
+    modal.id = "sbc-modal";
+    modal.addEventListener("click", e => e.stopPropagation());
+    modal.innerHTML = `
+      <div class="sbc-header">
+        <h2>Steam 徽章卡牌购买助手</h2>
+        <span class="sbc-close" title="关闭">✕</span>
+      </div>
+      <div class="sbc-body">
+        <div class="sbc-toolbar">
+          <label class="sbc-primary-label">单套卡牌价格上限 ¥ <input id="sbc-threshold" class="sbc-input" type="number" min="0" step="0.5" value="${state.cfg.threshold}"></label>
+          <label>最大徽章页数 <input id="sbc-max-pages" class="sbc-input" type="number" min="1" max="20" value="${state.cfg.maxBadgePages}"></label>
+          <label>
+            <input id="sbc-include-drops" type="checkbox" ${state.cfg.includeDrops ? "checked" : ""}>
+            包含有掉落卡牌的游戏
+          </label>
+        </div>
+        <div class="sbc-toolbar" style="margin-bottom:6px">
+          <label>请求间隔 ms <input id="sbc-req-interval" class="sbc-input" type="number" min="100" step="100" value="${state.cfg.requestInterval}" style="width:70px"></label>
+          <label>扫描间隔 ms <input id="sbc-scan-interval" class="sbc-input" type="number" min="200" step="100" value="${state.cfg.scanInterval}"></label>
+          <label>每 <input id="sbc-batch-size" class="sbc-input" type="number" min="5" step="1" value="${state.cfg.batchSize}" style="width:55px"> 次快速price请求后暂停</label>
+          <label><input id="sbc-batch-pause" class="sbc-input" type="number" min="500" step="500" value="${state.cfg.batchPause}" style="width:75px"> ms</label>
+        </div>
+        <div class="sbc-toolbar" style="margin-bottom:6px">
+          <label>黑名单 appid (逗号分隔) <input id="sbc-blacklist" class="sbc-input" type="text" value="${state.cfg.blacklist}" style="width:180px" placeholder="例如: 3558940,123456"></label>
+        </div>
+        <div style="display:flex; gap:10px; margin-bottom:8px;">
+          <div class="sbc-btn" id="sbc-scan-btn">开始扫描</div>
+          <div class="sbc-btn alt disabled" id="sbc-buy-btn">购买选中</div>
+          <div class="sbc-btn alt disabled" id="sbc-stop-btn">停止</div>
+          <div class="sbc-btn alt disabled" id="sbc-skip-btn" title="跳过当前徽章">跳过当前</div>
+        </div>
+        <div class="sbc-progress" id="sbc-progress-wrap" style="display:none">
+          <div class="sbc-progress-bar" id="sbc-progress-bar" style="width:0"></div>
+          <div class="sbc-progress-text" id="sbc-progress-text">0/0</div>
+        </div>
+        <div class="sbc-summary" id="sbc-summary"></div>
+        <div class="sbc-status-text" id="sbc-status"></div>
+        <div class="sbc-game-list" id="sbc-list"></div>
+        <div id="sbc-log"></div>
+      </div>
+      <div class="sbc-footer">
+        <span class="sbc-label">V0.8.0 · 默认货币：人民币(CNY) · 仅 V1 手动 buylisting</span>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    modalEl = modal;
+
+    modal.querySelector(".sbc-close").addEventListener("click", closeModal);
+
+    const cfgIds = ["sbc-threshold", "sbc-scan-interval",
+      "sbc-req-interval", "sbc-max-pages", "sbc-include-drops",
+      "sbc-batch-size", "sbc-batch-pause", "sbc-blacklist"];
+    cfgIds.forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener("change", () => {
+        state.cfg.threshold = parseFloat(document.getElementById("sbc-threshold").value) || 0;
+        state.cfg.scanInterval = parseInt(document.getElementById("sbc-scan-interval").value, 10) || 800;
+        state.cfg.requestInterval = parseInt(document.getElementById("sbc-req-interval").value, 10) || 800;
+        state.cfg.maxBadgePages = parseInt(document.getElementById("sbc-max-pages").value, 10) || 5;
+        state.cfg.includeDrops = document.getElementById("sbc-include-drops").checked;
+        state.cfg.batchSize = parseInt(document.getElementById("sbc-batch-size").value, 10) || 18;
+        state.cfg.batchPause = parseInt(document.getElementById("sbc-batch-pause").value, 10) || 15000;
+        state.cfg.blacklist = document.getElementById("sbc-blacklist").value.trim();
+        saveConfig(state.cfg);
+      });
+    });
+
+    document.getElementById("sbc-scan-btn").addEventListener("click", startScan);
+    document.getElementById("sbc-buy-btn").addEventListener("click", startBuy);
+    document.getElementById("sbc-stop-btn").addEventListener("click", requestStop);
+    document.getElementById("sbc-skip-btn").addEventListener("click", skipCurrentBadge);
+  }
+
+  function skipCurrentBadge() {
+    state.skipCurrent = true;
+    log("跳过当前徽章...", "warn");
+  }
+
+  function closeModal() {
+    if (state.scanning || state.buying) {
+      state.stopRequested = true;
+      state.queue?.stop();
+    }
+    document.getElementById("sbc-backdrop")?.remove();
+    modalEl?.remove();
+    modalEl = null;
+  }
+
+  // ============================================================
+  // Logging / Progress
+  // ============================================================
+  function log(msg, type = "") {
+    const box = document.getElementById("sbc-log");
+    if (!box) { console.log("[SBC]", msg); return; }
+    const line = document.createElement("div");
+    if (type) line.className = type;
+    line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function setProgress(done, total, text = "") {
+    const wrap = document.getElementById("sbc-progress-wrap");
+    const bar = document.getElementById("sbc-progress-bar");
+    const ptxt = document.getElementById("sbc-progress-text");
+    if (!wrap) return;
+    wrap.style.display = "";
+    const pct = total > 0 ? Math.min(100, (done / total) * 100) : 0;
+    bar.style.width = pct + "%";
+    ptxt.textContent = text || `${done}/${total}`;
+  }
+
+  function hideProgress() {
+    const wrap = document.getElementById("sbc-progress-wrap");
+    if (wrap) wrap.style.display = "none";
+  }
+
+  function setSummary(html) {
+    const el = document.getElementById("sbc-summary");
+    if (el) el.innerHTML = html;
+  }
+
+  // ============================================================
+  // Animated status
+  // ============================================================
+  let statusTimer = null;
+  function setStatus(text, animate = true) {
+    const el = document.getElementById("sbc-status");
+    if (!el) return;
+    if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+    if (!text) { el.textContent = ""; return; }
+    if (!animate) { el.textContent = text; return; }
+    el.textContent = text;
+    let dots = 0;
+    statusTimer = setInterval(() => {
+      dots = (dots + 1) % 4;
+      el.textContent = text + " " + ".".repeat(dots);
+    }, 500);
+  }
+
+  // ============================================================
+  // Scan flow
+  // ============================================================
+  function setScanPhase(phase) {
+    const btn = document.getElementById("sbc-scan-btn");
+    const buyBtn = document.getElementById("sbc-buy-btn");
+    if (!btn) return;
+    btn.textContent = "开始扫描";
+    switch (phase) {
+      case "phase1": btn.textContent = "扫描中: 徽章列表"; break;
+      case "phase2": btn.textContent = "扫描中: 卡牌详情+查价"; break;
+      case "phase3": btn.textContent = "扫描完成: 可购买"; break;
+      case "scanning": btn.textContent = "扫描中..."; break;
+      case "done": btn.textContent = "扫描完成"; break;
+    }
+  }
+
+  async function startScan() {
+    if (state.scanning || state.buying) return;
+    state.scanning = true;
+    state.stopRequested = false;
+    state.skipCurrent = false;
+    state.results = [];
+    state.selected.clear();
+    document.getElementById("sbc-list").innerHTML = "";
+    document.getElementById("sbc-log").innerHTML = "";
+    document.getElementById("sbc-scan-btn").classList.add("disabled");
+    document.getElementById("sbc-buy-btn").classList.add("disabled");
+    document.getElementById("sbc-skip-btn").classList.remove("disabled");
+    document.getElementById("sbc-stop-btn").classList.remove("disabled");
+    setScanPhase("scanning");
+    setStatus("正在扫描徽章页");
+
+    const cfg = state.cfg;
+    const queue = new RequestQueue(cfg.requestInterval, cfg.batchSize, cfg.batchPause, state, setStatus);
+
+
+    state.queue = queue;
+    const profileUrl = getProfileUrl();
+    if (!profileUrl) {
+      log("未找到 Profile URL", "err");
+      state.scanning = false;
+      state.queue = null;
+      hideProgress();
+      document.getElementById("sbc-scan-btn").classList.remove("disabled");
+      document.getElementById("sbc-skip-btn").classList.add("disabled");
+      document.getElementById("sbc-stop-btn").classList.add("disabled");
+      return;
+    }
+
+    try {
+      log("【阶段 1/3】正在扫描徽章页 (找有未完成进度的游戏)...");
+      setProgress(0, 1, "阶段1: 扫描徽章页列表中...");
+      setScanPhase("phase1");
+      const badges = await scanBadgePages(cfg, msg => log(msg, "info"), queue);
+
+      if (badges.length === 0) {
+        log("未找到任何有未完成进度的徽章", "warn");
+        setSummary("扫描完成: 未找到有未完成进度的徽章");
+        setStatus(null);
+        setScanPhase("done");
+        return;
+      }
+
+      log(`找到 ${badges.length} 个有未完成进度的徽章，开始逐个获取卡牌详情`);
+      log("【阶段 2/3】逐个获取卡牌页 + 查价中...");
+      setProgress(0, badges.length, `阶段2: 获取卡牌详情 0/${badges.length}`);
+      setScanPhase("phase2");
+      setStatus("扫描卡牌价格中");
+
+      let processed = 0;
+      let skipped = 0;
+      const thresholdCents = Math.round(cfg.threshold * 100);
+
+      for (const b of badges) {
+            if (state.stopRequested || state.skipCurrent) { log("已手动停止", "warn"); break; }
+            // blacklist check
+            const blAppids = (cfg.blacklist || "").split(",").map(s => s.trim()).filter(Boolean);
+            if (blAppids.includes(String(b.appid))) {
+              log(`[${b.appid}] ${b.gameName || ""}: 在黑名单中, 跳过`, "info");
+              skipped++;
+              continue;
+            }
+        processed++;
+        setProgress(processed, badges.length,
+          `阶段2: 获取卡牌详情 ${processed}/${badges.length} · ${b.gameName || b.appid}`);
+
+        try {
+          if (state.stopRequested || state.skipCurrent) { skipped++; continue; }
+          if (state.skipCurrent) {
+            state.skipCurrent = false;
+            log(`[${b.appid}] 跳过 (手动)`, "warn");
+            skipped++;
+            continue;
+          }
+          const suffix = b.isFoil ? "?border=1" : "";
+          const url = `${profileUrl}/gamecards/${b.appid}/${suffix}`;
+          let res;
+          try {
+            res = await queue.fetch(url);
+          } catch (fetchErr) {
+            if (state.stopRequested || state.skipCurrent) {
+              if (state.skipCurrent) { state.skipCurrent = false; log("已跳过当前徽章", "warn"); skipped++; }
+              else { log("已手动停止", "warn"); }
+              if (state.stopRequested) break;
+              continue;
+            }
+            log(`[${b.appid}] ${b.gameName || ""}: 拉取 gamecards 网络错误`, "warn");
+            skipped++;
+            continue;
+          }
+          if (!res || !res.text) {
+            log(`[${b.appid}] ${b.gameName || ""}: 拉取 gamecards 失败`, "warn");
+            skipped++;
+            continue;
+          }
+          // skip non-trading-card badges
+          if (!res.text.includes('badge_card_set_card')) {
+            log(`[${b.appid}] ${b.gameName || ""}: 无卡牌套组 (可能是社区徽章)`, "info");
+            skipped++;
+            continue;
+          }
+
+          const info = parseGameCardsHtml(res.text, b.appid, b.isFoil);
+          info.appid = b.appid;
+          info.isFoil = b.isFoil;
+          info.gameName = b.gameName || info.gameName || "";
+          info.cardPrices = [];
+          info.cheapestSetCostCents = 0;
+          info.fullSetCostCents = 0;
+          info.level5CostCents = 0;
+          info.missingCards = [];
+
+          if (info.totalInSet === 0 || info.need === 0) {
+            log(`[${b.appid}] ${info.gameName}: Lv${info.level}, 套卡完整或无卡牌`, "info");
+            skipped++;
+            continue;
+          }
+
+          if (!cfg.includeDrops && info.dropsRemaining > 0) {
+            log(`[${b.appid}] ${info.gameName}: 还有 ${info.dropsRemaining} 张掉落，跳过 (可勾选"包含有掉落"来扫描)`, "info");
+            skipped++;
+            continue;
+          }
+
+          if (info.level >= 5) {
+            log(`[${b.appid}] ${info.gameName}: 已满级 Lv${info.level}`, "info");
+            skipped++;
+            continue;
+          }
+
+          log(`[${b.appid}] ${info.gameName} Lv${info.level} 缺 ${info.need}/${info.totalInSet} 张, 正在查价...`);
+
+          // Phase 3: price each card type
+          let setCostCents = 0;            // 单套补全价: missing for 1 level
+          let fullSetCostCents = 0;         // 单套最低价: all cards
+          let level5CostCents = 0;          // 满级最低价: to Lv5
+          let minVolume = Infinity;          // smallest volume across priced cards
+          const setsTo5 = Math.max(0, 5 - info.level);
+          let allPriced = true;
+          let thresholdSkip = false;
+
+          for (const card of info.cards) {
+            if (state.stopRequested || state.skipCurrent) break;
+            if (!card.marketHashName) {
+              log(`  ⚠ 卡牌 "${card.name}" 无 market hash name, 跳过此游戏`, "warn");
+              allPriced = false;
+              break;
+            }
+
+            const pk = await priceCard(card.marketHashName, queue);
+            if (!pk) {
+              log(`  ⚠ 卡牌 "${card.name}" (market: ${card.marketHashName}) 查价失败, 跳过此游戏`, "warn");
+              allPriced = false;
+              break;
+            }
+            if (pk.lowestSellCents == null) {
+              log(`  ⚠ 卡牌 "${card.name}" 无卖单, 跳过此游戏`, "warn");
+              allPriced = false;
+              break;
+            }
+
+            card.lowestCents = pk.lowestSellCents;
+            card.medianCents = pk.medianCents;
+            card.volume = pk.volume;
+            if (pk.volume < minVolume) minVolume = pk.volume;
+            info.cardPrices.push({
+              name: card.name,
+              lowestCents: pk.lowestSellCents,
+              medianCents: pk.medianCents,
+              volume: pk.volume,
+              marketHashName: card.marketHashName,
+            });
+
+            const need1 = Math.max(0, 1 - card.owned);
+            const need5 = Math.max(0, setsTo5 - card.owned);
+            setCostCents += pk.lowestSellCents * need1;
+            fullSetCostCents += pk.lowestSellCents;
+            // level5: 1st copy at lowest, rest at median
+            level5CostCents += need5 > 0
+              ? pk.lowestSellCents + (need5 - 1) * Math.max(pk.lowestSellCents, pk.medianCents)
+              : 0;
+
+            if (need1 > 0) info.missingCards.push(card);
+
+            // smart skip: if full set cost already exceeds threshold
+            if (fullSetCostCents > thresholdCents) {
+              log(`  → 已查${info.cardPrices.length}/${info.totalInSet}张, 全套 ¥${formatCNY(fullSetCostCents)} > ¥${cfg.threshold}，跳过`, "info");
+              allPriced = false;
+              thresholdSkip = true;
+              break;
+            }
+          }
+
+          if (!allPriced) {
+            if (thresholdSkip) {
+              log(`  → 单套卡牌价格已大于上限，跳过`, "info");
+            } else {
+              log(`  → 部分卡牌无法取价, 跳过`, "warn");
+            }
+            skipped++;
+            continue;
+          }
+
+          info.cheapestSetCostCents = setCostCents;
+          info.fullSetCostCents = fullSetCostCents;
+          info.level5CostCents = level5CostCents;
+          info.minVolume = minVolume === Infinity ? 0 : minVolume;
+          info.cheapestSetCNY = formatCNY(setCostCents);
+          info.fullSetCNY = formatCNY(fullSetCostCents);
+          info.level5CNY = formatCNY(level5CostCents);
+
+          if (fullSetCostCents > thresholdCents) {
+            log(`  → 单套卡牌价格已大于上限(¥${info.fullSetCNY} > ¥${cfg.threshold})，跳过`, "info");
+            skipped++;
+            continue;
+          }
+
+          state.results.push(info);
+          renderGameRow(info);
+          log(`  ✓ [${b.appid}] ${info.gameName}: 补全 ¥${info.cheapestSetCNY} | 全套 ¥${info.fullSetCNY} | 满级 ¥${info.level5CNY}`, "ok");
+
+        } catch (e) {
+          log(`[${b.appid}] ${b.gameName || ""}: 出错 ${e?.error || e?.status || JSON.stringify(e)}`, "err");
+          skipped++;
+        }
+      }
+
+      const resultCount = state.results.length;
+      setSummary(`扫描完成: 扫描 ${processed} 个徽章, 跳过 ${skipped} 个`);
+      updateSummary();
+      setStatus(null);
+
+      if (resultCount > 0) {
+        setScanPhase("phase3");
+        document.getElementById("sbc-buy-btn").classList.remove("disabled");
+      } else {
+        setScanPhase("done");
+      }
+
+    } catch (e) {
+      log(`扫描中断: ${e?.message || JSON.stringify(e)}`, "err");
+    } finally {
+      state.scanning = false;
+      state.queue = null;
+      hideProgress();
+      setStatus(null);
+      document.getElementById("sbc-scan-btn").classList.remove("disabled");
+      document.getElementById("sbc-skip-btn").classList.add("disabled");
+      document.getElementById("sbc-stop-btn").classList.add("disabled");
+    }
+  }
+
+  // ============================================================
+  // Render game row
+  // ============================================================
+  function renderGameRow(info) {
+    const list = document.getElementById("sbc-list");
+    // add header on first row
+    if (list.children.length === 0) {
+      const hdr = document.createElement("div");
+      hdr.className = "sbc-game-row sbc-row-header";
+      hdr.innerHTML = `
+        <span class="sbc-appid">游戏ID</span>
+        <span class="sbc-name">游戏名</span>
+        <span class="sbc-level">等级</span>
+        <span class="sbc-cards">卡牌</span>
+        <span class="sbc-cost">单套补全价</span>
+        <span class="sbc-full">单套最低价</span>
+        <span class="sbc-lv5" title="满级价格不准, 绿色会准一些, 灰色不准">满级价格估算</span>
+        <span class="sbc-drops">掉落</span>
+        <span class="sbc-select"><span class="sbc-select-all" title="全选/全不选">☐</span></span>
+      `;
+      const selAll = hdr.querySelector(".sbc-select-all");
+      selAll.addEventListener("click", () => {
+        const rows = list.querySelectorAll(".sbc-game-row:not(.sbc-row-header)");
+        const allChecked = [...rows].every(r => r.querySelector(".sbc-row-cb")?.checked);
+        rows.forEach(r => {
+          const cb = r.querySelector(".sbc-row-cb");
+          const infoKey = r.dataset.infoKey;
+          if (cb) {
+            cb.checked = !allChecked;
+            if (!allChecked) {
+              state.selected.add(infoKey);
+              r.classList.add("sbc-selected");
+            } else {
+              state.selected.delete(infoKey);
+              r.classList.remove("sbc-selected");
+            }
+          }
+        });
+        selAll.textContent = allChecked ? "☐" : "☑";
+        updateSummary();
+      });
+      list.appendChild(hdr);
+    }
+
+    const row = document.createElement("div");
+    row.className = "sbc-game-row";
+    row.dataset.appid = info.appid;
+    row.dataset.foil = info.isFoil ? 1 : 0;
+    const ownedCards = info.cards.reduce((sum, c) => sum + Math.min(c.owned, 1), 0);
+    const infoKey = info.appid + (info.isFoil ? "f" : "");
+    const lv5Color = (info.minVolume || 0) > 1 ? "color:#4caf50" : (info.minVolume || 0) === 0 ? "color:#888" : "";
+    row.dataset.infoKey = infoKey;
+    row.innerHTML = `
+      <span class="sbc-appid">${info.appid}${info.isFoil ? "(箔)" : ""}</span>
+      <span class="sbc-name">${info.gameName || "(未知)"}</span>
+      <span class="sbc-level">Lv${info.level}/5</span>
+      <span class="sbc-cards">${ownedCards}/${info.totalInSet}</span>
+      <span class="sbc-cost">¥${info.cheapestSetCNY}</span>
+      <span class="sbc-full">¥${info.fullSetCNY}</span>
+      <span class="sbc-lv5" style="${lv5Color}">¥${info.level5CNY}</span>
+      <span class="sbc-drops">${info.dropsRemaining}</span>
+      <span class="sbc-select"><input type="checkbox" class="sbc-row-cb" title="选择此游戏"></span>
+    `;
+
+    const cb = row.querySelector(".sbc-row-cb");
+    cb.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (cb.checked) {
+        state.selected.add(infoKey);
+        row.classList.add("sbc-selected");
+      } else {
+        state.selected.delete(infoKey);
+        row.classList.remove("sbc-selected");
+      }
+      updateSummary();
+    });
+
+    row.addEventListener("click", () => {
+      cb.checked = !cb.checked;
+      cb.dispatchEvent(new Event("click"));
+    });
+
+    list.appendChild(row);
+  }
+
+  function updateSummary() {
+    const count = state.results.length;
+    const selCount = state.selected.size;
+    const totalCNY = (state.results.reduce((s, r) => s + r.cheapestSetCostCents, 0) / 100).toFixed(2);
+    const fullCNY = (state.results.reduce((s, r) => s + r.fullSetCostCents, 0) / 100).toFixed(2);
+    const lv5CNY = (state.results.reduce((s, r) => s + r.level5CostCents, 0) / 100).toFixed(2);
+    document.getElementById("sbc-summary").innerHTML = `
+      共 <b>${count}</b> 个 ≤ ¥${state.cfg.threshold} (单套卡牌价格上限)，已选 <b>${selCount}</b>，补全总价 <b>¥${totalCNY}</b>，全套总价 ¥${fullCNY}，满级总价 ¥${lv5CNY}
+    `;
+  }
+
+  // ============================================================
+  // Buy flow (V1: buylisting only)
+  // ============================================================
+  async function startBuy() {
+    if (state.scanning || state.buying) return;
+    if (state.selected.size === 0) {
+      log("未选择任何游戏", "warn");
+      return;
+    }
+
+    state.buying = true;
+    state.stopRequested = false;
+    document.getElementById("sbc-buy-btn").classList.add("disabled");
+    document.getElementById("sbc-stop-btn").classList.remove("disabled");
+
+    const queue = new RequestQueue(state.cfg.requestInterval, state.cfg.batchSize, state.cfg.batchPause, state, setStatus);
+    state.queue = queue;
+    const bufferCents = Math.round((state.cfg.buffer || 0) * 100);
+
+    const total = state.results.filter(r => {
+      const k = r.appid + (r.isFoil ? "f" : "");
+      return state.selected.has(k);
+    });
+
+    let successCount = 0, failCount = 0, skipCount = 0;
+    let totalSpentCents = 0;
+
+    for (const info of total) {
+      if (state.stopRequested) { log("手动停止购买", "warn"); break; }
+
+      log(`\n购买 ${info.appid} ${info.gameName} Lv${info.level}...`, "info");
+      const rowEl = document.querySelector(`.sbc-game-row[data-appid="${info.appid}"]`);
+      const statusEl = rowEl?.querySelector(".sbc-status");
+      if (statusEl) statusEl.textContent = "购买中...";
+
+      const buyTasks = [];
+      for (const card of info.cards) {
+        const needed = Math.max(0, info.setsToLevel5 - card.owned);
+        for (let i = 0; i < needed; i++) {
+          buyTasks.push({ card, idx: i });
+        }
+      }
+
+      let localOk = 0, localFail = 0, localSkip = 0;
+      for (const task of buyTasks) {
+        if (state.stopRequested) break;
+        const maxCents = task.card.lowestCents + bufferCents;
+        try {
+          const listingId = await findListingId(task.card.marketHashName, maxCents, queue);
+          if (!listingId) {
+            log(`  ${task.card.name}: buffer 范围内无挂牌，跳过`, "warn");
+            localSkip++; skipCount++;
+            continue;
+          }
+          const buyRes = await buyListing(listingId, task.card.lowestCents + bufferCents, queue);
+          if (buyRes.status === 200 && buyRes.data && (buyRes.data.success === 1 || buyRes.data.success === true)) {
+            log(`  ${task.card.name}: 成功购买 listing=${listingId} ¥${formatCNY(maxCents)}`, "ok");
+            localOk++; successCount++;
+            totalSpentCents += maxCents;
+          } else {
+            const errMsg = buyRes.data?.message || buyRes.data?.strError || `status=${buyRes.status}`;
+            log(`  ${task.card.name}: 购买失败 (${errMsg})`, "err");
+            localFail++; failCount++;
+          }
+        } catch (e) {
+          log(`  ${task.card.name}: 网络错误 ${e?.error || e?.status || JSON.stringify(e)}`, "err");
+          localFail++; failCount++;
+        }
+      }
+
+      log(`  ${info.appid} ${info.gameName} 本局: 成功=${localOk} 失败=${localFail} 跳过=${localSkip}`, "info");
+      if (statusEl) statusEl.textContent = `OK=${localOk} F=${localFail} S=${localSkip}`;
+    }
+
+    log(`\n===== 总购买 =====`, "info");
+    log(`成功: ${successCount}  失败: ${failCount}  跳过: ${skipCount}`, successCount > 0 ? "ok" : "warn");
+    log(`总花费(含buffer估算): ¥${formatCNY(totalSpentCents)}`, "info");
+
+    state.buying = false;
+    state.queue = null;
+    document.getElementById("sbc-buy-btn").classList.remove("disabled");
+    document.getElementById("sbc-stop-btn").classList.add("disabled");
+  }
+
+  function requestStop() {
+    if (state.scanning || state.buying) {
+      state.stopRequested = true;
+      state.queue?.stop();
+      log("已请求停止...", "warn");
+      
+      // safety timeout: force re-enable buttons after 5 seconds if finally doesn't run
+      setTimeout(() => {
+        if (state.scanning || state.buying) {
+          console.log("[SBC] Safety timeout: force reset state");
+          state.scanning = false;
+          state.buying = false;
+          state.stopRequested = false;
+          if (state.queue) {
+            state.queue.clear();
+            state.queue = null;
+          }
+          hideProgress();
+          document.getElementById("sbc-scan-btn").classList.remove("disabled");
+      document.getElementById("sbc-skip-btn").classList.add("disabled");
+          document.getElementById("sbc-stop-btn").classList.add("disabled");
+          document.getElementById("sbc-buy-btn").classList.add("disabled");
+          setScanPhase("done");
+        }
+      }, 5000);
+    }
+  }
+
+  // ============================================================
+  // Init
+  // ============================================================
+  window.addEventListener("load", () => {
+    injectEntryBtn();
+  });
+
+})();
