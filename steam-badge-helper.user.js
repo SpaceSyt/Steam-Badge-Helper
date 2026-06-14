@@ -2,7 +2,7 @@
 // @name         Steam Badge Helper
 // @name:zh-CN   Steam 徽章助手
 // @namespace    https://github.com/SpaceSyt/Steam-Badge-Helper
-// @version      0.9.2
+// @version      0.9.3
 // @description  Scan Steam badges, batch query card prices, estimate full set costs
 // @description:zh-CN 扫描 Steam 徽章，批量查询卡牌价格，估算全套成本
 // @author       SpaceSyt
@@ -44,6 +44,7 @@
     blacklist: "",
     blacklistNames: "{}",
     buyMode: "complete5",
+    buffer: 0.10,
   };
 
   const CURRENCY_CNY = 23;
@@ -786,6 +787,7 @@
               <option value="buy1" ${state.cfg.buyMode === "buy1" ? "selected" : ""}>购买单套</option>
               <option value="buy5" ${state.cfg.buyMode === "buy5" ? "selected" : ""}>购买五套</option>
             </select></label>
+            <label>价格上浮 ¥ <input id="sbc-buffer" class="sbc-input" type="number" min="0" step="0.01" value="${state.cfg.buffer}" style="width:60px"></label>
             <label>最大徽章页数 <input id="sbc-max-pages" class="sbc-input" type="number" min="1" max="20" value="${state.cfg.maxBadgePages}"></label>
             <label>
               <input id="sbc-include-drops" type="checkbox" ${state.cfg.includeDrops ? "checked" : ""}>
@@ -825,7 +827,7 @@
         </div>
       </div>
       <div class="sbc-footer">
-        <span class="sbc-label">V0.9.2 · 默认货币：人民币(CNY)</span>
+        <span class="sbc-label">V0.9.3 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -835,7 +837,7 @@
 
     const cfgIds = ["sbc-threshold", "sbc-scan-interval",
       "sbc-req-interval", "sbc-max-pages", "sbc-include-drops",
-      "sbc-batch-size", "sbc-batch-pause", "sbc-buy-mode"];
+      "sbc-batch-size", "sbc-batch-pause", "sbc-buy-mode", "sbc-buffer"];
     cfgIds.forEach(id => {
       const el = document.getElementById(id);
       if (!el) return;
@@ -848,6 +850,7 @@
         state.cfg.batchSize = parseInt(document.getElementById("sbc-batch-size").value, 10) || 18;
         state.cfg.batchPause = parseInt(document.getElementById("sbc-batch-pause").value, 10) || 15000;
         state.cfg.buyMode = document.getElementById("sbc-buy-mode").value;
+        state.cfg.buffer = parseFloat(document.getElementById("sbc-buffer").value) || 0;
         saveConfig(state.cfg);
       });
     });
@@ -1342,10 +1345,12 @@
       params.set("steamdb_return_to", `${profileUrl}/gamecards/${info.appid}/`);
     }
 
+    const bufferCents = Math.round((state.cfg.buffer || 0) * 100);
     const toBuy = qtyByCard.filter(q => q.qty > 0);
     const buyData = {
       appid: info.appid,
       gameName: info.gameName,
+      bufferCents,
       cards: toBuy.map(q => ({
         marketHashName: q.card.marketHashName,
         lowestCents: q.card.lowestCents || 0,
@@ -1420,7 +1425,8 @@
         }
 
         if (priceInput && card.lowestCents) {
-          priceInput.value = (card.lowestCents / 100).toFixed(2);
+          const bufferCents = data.bufferCents || 0;
+          priceInput.value = ((card.lowestCents + bufferCents) / 100).toFixed(2);
           priceInput.dispatchEvent(new Event("input", { bubbles: true }));
           priceInput.dispatchEvent(new Event("change", { bubbles: true }));
         }
