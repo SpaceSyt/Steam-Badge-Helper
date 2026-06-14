@@ -2,7 +2,7 @@
 // @name         Steam Badge Helper
 // @name:zh-CN   Steam 徽章助手
 // @namespace    https://github.com/SpaceSyt/Steam-Badge-Helper
-// @version      0.9.1
+// @version      0.9.2
 // @description  Scan Steam badges, batch query card prices, estimate full set costs
 // @description:zh-CN 扫描 Steam 徽章，批量查询卡牌价格，估算全套成本
 // @author       SpaceSyt
@@ -34,16 +34,16 @@
   // Constants
   // ============================================================
   const DEFAULT_CONFIG = {
-    threshold: 10,
+    threshold: 5,
     scanInterval: 800,
     requestInterval: 1200,
     batchSize: 20,
     batchPause: 15000,
     includeDrops: false,
-    maxBadgePages: 10,
+    maxBadgePages: 1,
     blacklist: "",
     blacklistNames: "{}",
-    buyMode: "complete1",
+    buyMode: "complete5",
   };
 
   const CURRENCY_CNY = 23;
@@ -780,7 +780,7 @@
         <div class="sbc-tab-content active" id="sbc-tab-scan">
           <div class="sbc-toolbar">
             <label class="sbc-primary-label">单套卡牌价格上限 ¥ <input id="sbc-threshold" class="sbc-input" type="number" min="0" step="0.5" value="${state.cfg.threshold}"></label>
-            <label>购买卡牌逻辑 <select id="sbc-buy-mode" class="sbc-input" style="width:110px">
+            <label class="sbc-primary-label">购买卡牌逻辑 <select id="sbc-buy-mode" class="sbc-input" style="width:110px">
               <option value="complete1" ${state.cfg.buyMode === "complete1" ? "selected" : ""}>补全单套</option>
               <option value="complete5" ${state.cfg.buyMode === "complete5" ? "selected" : ""}>补全五套</option>
               <option value="buy1" ${state.cfg.buyMode === "buy1" ? "selected" : ""}>购买单套</option>
@@ -825,7 +825,7 @@
         </div>
       </div>
       <div class="sbc-footer">
-        <span class="sbc-label">V0.9.1 · 默认货币：人民币(CNY)</span>
+        <span class="sbc-label">V0.9.2 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
