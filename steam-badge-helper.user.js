@@ -1299,6 +1299,13 @@
       openMultibuy(info);
     });
 
+    row.addEventListener("click", (e) => {
+      if (e.target.closest(".sbc-buy-link")) return;
+      const pUrl = getProfileUrl();
+      if (pUrl) window.open(`${pUrl}/gamecards/${info.appid}/`, "_blank");
+    });
+    row.style.cursor = "pointer";
+
     list.appendChild(row);
   }
 
@@ -1377,75 +1384,65 @@
 
     if (!data || !data.cards || data.cards.length === 0) return;
 
-    const cardMap = new Map();
-    data.cards.forEach(c => {
-      cardMap.set(c.name, c);
-      if (c.marketHashName && c.marketHashName !== c.name) {
-        cardMap.set(decodeURIComponent(c.marketHashName), c);
-      }
-    });
+    const bufferCents = data.bufferCents || 0;
 
     const fillForm = () => {
-      const items = document.querySelectorAll(
-        ".market_multibuy_item, tr[id^='multibuy_'], .multibuy_item_row, .multibuy_row"
+      let items = document.querySelectorAll(
+        ".market_multibuy_item, .multibuy_item_row, .multibuy_row, #market_multibuy_dialog tr, #market_multibuy_dialog .market_listing_row"
       );
       if (items.length === 0) return false;
 
       let filled = 0;
+
       items.forEach(item => {
-        const nameEl = item.querySelector(
-          ".market_multibuy_item_name, .item_name, .multibuy_item_name, td:first-child"
-        );
-        if (!nameEl) return;
-        const itemName = nameEl.textContent.trim();
-        const card = cardMap.get(itemName);
-        if (!card) return;
+        const itemText = item.textContent.trim();
+        let matchedCard = null;
 
-        let qtyInput = item.querySelector(
-          "input.quantity, input[name^='Qty'], input[name^='qty'], input[id*='quantity'], input[type='text']"
-        );
-        let priceInput = item.querySelector(
-          "input.price, input[name^='Price'], input[name^='price'], input[id*='price']"
-        );
-
-        // Fallback: if no class/name match, find inputs by order
-        if (!qtyInput || !priceInput) {
-          const inputs = item.querySelectorAll("input[type='text']");
-          if (inputs.length >= 2) {
-            if (!qtyInput) qtyInput = inputs[0];
-            if (!priceInput) priceInput = inputs[1];
+        // Match by searching item text for card name or market hash
+        for (const card of data.cards) {
+          const searchTerms = [card.name, card.marketHashName].filter(Boolean);
+          for (const term of searchTerms) {
+            const decoded = decodeURIComponent(term);
+            if (decoded && itemText.indexOf(decoded) >= 0) {
+              matchedCard = card;
+              break;
+            }
           }
+          if (matchedCard) break;
         }
+        if (!matchedCard) return;
 
-        if (qtyInput) {
-          qtyInput.value = String(card.qty || 1);
-          qtyInput.dispatchEvent(new Event("input", { bubbles: true }));
-          qtyInput.dispatchEvent(new Event("change", { bubbles: true }));
-          filled++;
-        }
+        const allInputs = item.querySelectorAll("input[type='text'], input:not([type])");
+        if (allInputs.length < 2) return;
 
-        if (priceInput && card.lowestCents) {
-          const bufferCents = data.bufferCents || 0;
-          priceInput.value = ((card.lowestCents + bufferCents) / 100).toFixed(2);
+        const qtyInput = allInputs[0];
+        const priceInput = allInputs[1];
+
+        qtyInput.value = String(matchedCard.qty || 1);
+        qtyInput.dispatchEvent(new Event("input", { bubbles: true }));
+        qtyInput.dispatchEvent(new Event("change", { bubbles: true }));
+
+        if (matchedCard.lowestCents != null) {
+          priceInput.value = ((matchedCard.lowestCents + bufferCents) / 100).toFixed(2);
           priceInput.dispatchEvent(new Event("input", { bubbles: true }));
           priceInput.dispatchEvent(new Event("change", { bubbles: true }));
         }
+
+        filled++;
       });
 
       if (filled > 0) {
-        log(`已自动填入 ${filled} 张卡牌的数量和价格`, "ok");
         GM_setValue("sbc_multibuy_data", null);
       }
-      return true;
+      return filled > 0;
     };
 
-    // Retry up to 10 times with 500ms intervals
     let attempts = 0;
     const tryFill = () => {
-      if (fillForm() || ++attempts >= 10) return;
-      setTimeout(tryFill, 500);
+      if (fillForm() || ++attempts >= 15) return;
+      setTimeout(tryFill, 600);
     };
-    tryFill();
+    setTimeout(tryFill, 300);
   }
 
   // ============================================================
