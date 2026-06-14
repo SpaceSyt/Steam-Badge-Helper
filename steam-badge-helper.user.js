@@ -2,7 +2,7 @@
 // @name         Steam Badge Helper
 // @name:zh-CN   Steam 徽章助手
 // @namespace    https://github.com/SpaceSyt/Steam-Badge-Helper
-// @version      0.8.0
+// @version      0.9.0
 // @description  Scan Steam badges, batch query card prices, estimate full set costs
 // @description:zh-CN 扫描 Steam 徽章，批量查询卡牌价格，估算全套成本
 // @author       SpaceSyt
@@ -13,6 +13,7 @@
 // @match        *://steamcommunity.com/*/badges*
 // @match        *://steamcommunity.com/id/*/badges*
 // @match        *://steamcommunity.com/profiles/*/badges*
+// @match        *://steamcommunity.com/market/multibuy*
 // @grant        GM_addStyle
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -751,7 +752,7 @@
         <div id="sbc-log"></div>
       </div>
       <div class="sbc-footer">
-        <span class="sbc-label">V0.8.0 · 默认货币：人民币(CNY) · 仅扫描与价格估算</span>
+        <span class="sbc-label">V0.9.0 · 默认货币：人民币(CNY) · 仅扫描与价格估算</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -1134,19 +1135,16 @@
         <span class="sbc-full">单套最低价</span>
         <span class="sbc-lv5" title="满级价格不准, 绿色会准一些, 灰色不准">满级价格估算</span>
         <span class="sbc-drops">掉落</span>
-        <span class="sbc-select">购买</span>
       `;
       list.appendChild(hdr);
     }
 
-    const profileUrl = getProfileUrl();
     const row = document.createElement("div");
     row.className = "sbc-game-row";
     row.dataset.appid = info.appid;
     row.dataset.foil = info.isFoil ? 1 : 0;
     const ownedCards = info.cards.reduce((sum, c) => sum + Math.min(c.owned, 1), 0);
     const lv5Color = (info.minVolume || 0) > 1 ? "color:#4caf50" : (info.minVolume || 0) === 0 ? "color:#888" : "";
-    const buyUrl = profileUrl ? `${profileUrl}/gamecards/${info.appid}/` : "#";
     row.innerHTML = `
       <span class="sbc-appid">${info.appid}${info.isFoil ? "(箔)" : ""}</span>
       <span class="sbc-name">${info.gameName || "(未知)"}</span>
@@ -1156,8 +1154,14 @@
       <span class="sbc-full">¥${info.fullSetCNY}</span>
       <span class="sbc-lv5" style="${lv5Color}">¥${info.level5CNY}</span>
       <span class="sbc-drops">${info.dropsRemaining}</span>
-      <span class="sbc-select"><a href="${buyUrl}" target="_blank" style="text-decoration:underline;color:#66c0f4;">购买</a></span>
+      <span class="sbc-select"><a href="javascript:void(0)" class="sbc-buy-link" data-appid="${info.appid}" style="text-decoration:underline;color:#66c0f4;cursor:pointer;">购买</a></span>
     `;
+
+    const buyLink = row.querySelector(".sbc-buy-link");
+    buyLink.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openMultibuy(info);
+    });
 
     list.appendChild(row);
   }
@@ -1170,6 +1174,117 @@
     document.getElementById("sbc-summary").innerHTML = `
       共 <b>${count}</b> 个 ≤ ¥${state.cfg.threshold} (单套卡牌价格上限)，补全总价 <b>¥${totalCNY}</b>，全套总价 ¥${fullCNY}，满级总价 ¥${lv5CNY}
     `;
+  }
+
+  // ============================================================
+  // Multibuy
+  // ============================================================
+  function openMultibuy(info) {
+    const missing = info.cards.filter(c => c.owned < 1 && c.marketHashName);
+    if (missing.length === 0) {
+      log(`${info.gameName}: 没有缺失卡牌，无需购买`, "info");
+      return;
+    }
+
+    const buyData = {
+      appid: info.appid,
+      gameName: info.gameName,
+      cards: missing.map(c => ({
+        marketHashName: c.marketHashName,
+        lowestCents: c.lowestCents,
+        name: c.name,
+      })),
+    };
+
+    GM_setValue("sbc_multibuy_data", JSON.stringify(buyData));
+
+    const itemsParams = missing
+      .map(c => `items[]=${encodeURIComponent(c.marketHashName)}`)
+      .join("&");
+    const multibuyUrl = `https://steamcommunity.com/market/multibuy?${itemsParams}`;
+
+    log(`${info.gameName}: 打开批量购买页面 (${missing.length} 张卡牌)`, "ok");
+    window.open(multibuyUrl, "_blank");
+  }
+
+  function initMultibuyAutoFill() {
+    let data;
+    try {
+      const raw = GM_getValue("sbc_multibuy_data", null);
+      if (!raw) return;
+      data = JSON.parse(raw);
+    } catch (_) { return; }
+
+    if (!data || !data.cards || data.cards.length === 0) return;
+
+    const cardMap = new Map();
+    data.cards.forEach(c => {
+      cardMap.set(c.name, c);
+      if (c.marketHashName && c.marketHashName !== c.name) {
+        cardMap.set(decodeURIComponent(c.marketHashName), c);
+      }
+    });
+
+    const fillForm = () => {
+      const items = document.querySelectorAll(
+        ".market_multibuy_item, tr[id^='multibuy_'], .multibuy_item_row, .multibuy_row"
+      );
+      if (items.length === 0) return false;
+
+      let filled = 0;
+      items.forEach(item => {
+        const nameEl = item.querySelector(
+          ".market_multibuy_item_name, .item_name, .multibuy_item_name, td:first-child"
+        );
+        if (!nameEl) return;
+        const itemName = nameEl.textContent.trim();
+        const card = cardMap.get(itemName);
+        if (!card) return;
+
+        let qtyInput = item.querySelector(
+          "input.quantity, input[name^='Qty'], input[name^='qty'], input[id*='quantity'], input[type='text']"
+        );
+        let priceInput = item.querySelector(
+          "input.price, input[name^='Price'], input[name^='price'], input[id*='price']"
+        );
+
+        // Fallback: if no class/name match, find inputs by order
+        if (!qtyInput || !priceInput) {
+          const inputs = item.querySelectorAll("input[type='text']");
+          if (inputs.length >= 2) {
+            if (!qtyInput) qtyInput = inputs[0];
+            if (!priceInput) priceInput = inputs[1];
+          }
+        }
+
+        if (qtyInput) {
+          qtyInput.value = "1";
+          qtyInput.dispatchEvent(new Event("input", { bubbles: true }));
+          qtyInput.dispatchEvent(new Event("change", { bubbles: true }));
+          filled++;
+        }
+
+        if (priceInput && card.lowestCents) {
+          priceInput.value = (card.lowestCents / 100).toFixed(2);
+          priceInput.dispatchEvent(new Event("input", { bubbles: true }));
+          priceInput.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      });
+
+      if (filled > 0) {
+        log(`已自动填入 ${filled} 张卡牌的数量和价格`, "ok");
+        GM_setValue("sbc_multibuy_data", null);
+      }
+      return true;
+    };
+
+    // Retry up to 10 times with 500ms intervals
+    let attempts = 0;
+    const tryFill = () => {
+      if (fillForm() || ++attempts >= 10) return;
+      setTimeout(tryFill, 500);
+    };
+    tryFill();
   }
 
   function requestStop() {
@@ -1199,8 +1314,16 @@
   // ============================================================
   // Init
   // ============================================================
-  window.addEventListener("load", () => {
-    injectEntryBtn();
-  });
+  const pageUrl = window.location.href;
+
+  if (pageUrl.includes("/market/multibuy")) {
+    window.addEventListener("load", () => {
+      initMultibuyAutoFill();
+    });
+  } else {
+    window.addEventListener("load", () => {
+      injectEntryBtn();
+    });
+  }
 
 })();
