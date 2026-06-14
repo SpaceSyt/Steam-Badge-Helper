@@ -42,6 +42,7 @@
     includeDrops: false,
     maxBadgePages: 10,
     blacklist: "",
+    blacklistNames: "{}",
   };
 
   const CURRENCY_CNY = 23;
@@ -619,6 +620,57 @@
 
     .sbc-status-text { color: #8db7d7; font-size: 13px; padding: 6px 0; min-height: 20px; }
 
+    .sbc-tabs {
+      display: flex;
+      gap: 2px;
+      margin-bottom: 10px;
+      border-bottom: 1px solid #45556b;
+    }
+    .sbc-tab {
+      padding: 6px 16px;
+      background: rgba(0,0,0,0.3);
+      color: #8f98a0;
+      cursor: pointer;
+      border-radius: 3px 3px 0 0;
+      font-size: 14px;
+      user-select: none;
+    }
+    .sbc-tab:hover { color: #fff; background: rgba(103,193,245,0.1); }
+    .sbc-tab.active { color: #fff; background: #1b2838; border: 1px solid #45556b; border-bottom-color: #1b2838; }
+    .sbc-tab-content { display: none; }
+    .sbc-tab-content.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+
+    .sbc-bl-form {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+    .sbc-bl-list {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      border: 1px solid #2a3f5a;
+      border-radius: 3px;
+      background: rgba(0,0,0,0.2);
+    }
+    .sbc-bl-row {
+      padding: 6px 14px;
+      border-bottom: 1px solid rgba(69,85,107,0.4);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 14px;
+    }
+    .sbc-bl-row:hover { background: rgba(103,193,245,0.08); }
+    .sbc-bl-row .sbc-bl-id { width: 70px; color: #66c0f4; font-family: monospace; }
+    .sbc-bl-row .sbc-bl-name { flex: 1; color: #e2e2e2; }
+    .sbc-bl-row .sbc-bl-del { color: #c04040; cursor: pointer; font-size: 16px; user-select: none; }
+    .sbc-bl-row .sbc-bl-del:hover { color: #ff6060; }
+
+    .sbc-bl-result { color: #75b022; font-size: 14px; }
+
     #sbc-log {
       margin-top: 10px;
       flex: 1;
@@ -720,39 +772,53 @@
         <span class="sbc-close" title="关闭">✕</span>
       </div>
       <div class="sbc-body">
-        <div class="sbc-toolbar">
-          <label class="sbc-primary-label">单套卡牌价格上限 ¥ <input id="sbc-threshold" class="sbc-input" type="number" min="0" step="0.5" value="${state.cfg.threshold}"></label>
-          <label>最大徽章页数 <input id="sbc-max-pages" class="sbc-input" type="number" min="1" max="20" value="${state.cfg.maxBadgePages}"></label>
-          <label>
-            <input id="sbc-include-drops" type="checkbox" ${state.cfg.includeDrops ? "checked" : ""}>
-            包含有掉落卡牌的游戏
-          </label>
+        <div class="sbc-tabs">
+          <span class="sbc-tab active" data-tab="scan">价格扫描</span>
+          <span class="sbc-tab" data-tab="blacklist">黑名单</span>
         </div>
-        <div class="sbc-toolbar" style="margin-bottom:6px">
-          <label>请求间隔 ms <input id="sbc-req-interval" class="sbc-input" type="number" min="100" step="100" value="${state.cfg.requestInterval}" style="width:70px"></label>
-          <label>扫描间隔 ms <input id="sbc-scan-interval" class="sbc-input" type="number" min="200" step="100" value="${state.cfg.scanInterval}"></label>
-          <label>每 <input id="sbc-batch-size" class="sbc-input" type="number" min="5" step="1" value="${state.cfg.batchSize}" style="width:55px"> 次快速price请求后暂停</label>
-          <label><input id="sbc-batch-pause" class="sbc-input" type="number" min="500" step="500" value="${state.cfg.batchPause}" style="width:75px"> ms</label>
+        <div class="sbc-tab-content active" id="sbc-tab-scan">
+          <div class="sbc-toolbar">
+            <label class="sbc-primary-label">单套卡牌价格上限 ¥ <input id="sbc-threshold" class="sbc-input" type="number" min="0" step="0.5" value="${state.cfg.threshold}"></label>
+            <label>最大徽章页数 <input id="sbc-max-pages" class="sbc-input" type="number" min="1" max="20" value="${state.cfg.maxBadgePages}"></label>
+            <label>
+              <input id="sbc-include-drops" type="checkbox" ${state.cfg.includeDrops ? "checked" : ""}>
+              包含有掉落卡牌的游戏
+            </label>
+          </div>
+          <div class="sbc-toolbar" style="margin-bottom:6px">
+            <label>请求间隔 ms <input id="sbc-req-interval" class="sbc-input" type="number" min="100" step="100" value="${state.cfg.requestInterval}" style="width:70px"></label>
+            <label>扫描间隔 ms <input id="sbc-scan-interval" class="sbc-input" type="number" min="200" step="100" value="${state.cfg.scanInterval}"></label>
+            <label>每 <input id="sbc-batch-size" class="sbc-input" type="number" min="5" step="1" value="${state.cfg.batchSize}" style="width:55px"> 次快速price请求后暂停</label>
+            <label><input id="sbc-batch-pause" class="sbc-input" type="number" min="500" step="500" value="${state.cfg.batchPause}" style="width:75px"> ms</label>
+          </div>
+          <div style="display:flex; gap:10px; margin-bottom:8px;">
+            <div class="sbc-btn" id="sbc-scan-btn">开始扫描</div>
+            <div class="sbc-btn alt disabled" id="sbc-stop-btn">停止</div>
+            <div class="sbc-btn alt disabled" id="sbc-skip-btn" title="跳过当前徽章">跳过当前</div>
+          </div>
+          <div class="sbc-progress" id="sbc-progress-wrap" style="display:none">
+            <div class="sbc-progress-bar" id="sbc-progress-bar" style="width:0"></div>
+            <div class="sbc-progress-text" id="sbc-progress-text">0/0</div>
+          </div>
+          <div class="sbc-summary" id="sbc-summary"></div>
+          <div class="sbc-status-text" id="sbc-status"></div>
+          <div class="sbc-game-list" id="sbc-list"></div>
+          <div id="sbc-log"></div>
         </div>
-        <div class="sbc-toolbar" style="margin-bottom:6px">
-          <label>黑名单 appid (逗号分隔) <input id="sbc-blacklist" class="sbc-input" type="text" value="${state.cfg.blacklist}" style="width:180px" placeholder="例如: 3558940,123456"></label>
+        <div class="sbc-tab-content" id="sbc-tab-blacklist">
+          <div class="sbc-bl-form">
+            <label>游戏 AppID <input id="sbc-bl-appid" class="sbc-input" type="text" style="width:100px" placeholder="例如: 261640"></label>
+            <div class="sbc-btn alt" id="sbc-bl-lookup">查询游戏</div>
+            <span class="sbc-bl-result" id="sbc-bl-result"></span>
+          </div>
+          <div class="sbc-bl-form">
+            <div class="sbc-btn" id="sbc-bl-add" style="display:none;">加入黑名单</div>
+          </div>
+          <div class="sbc-bl-list" id="sbc-bl-list"></div>
         </div>
-        <div style="display:flex; gap:10px; margin-bottom:8px;">
-          <div class="sbc-btn" id="sbc-scan-btn">开始扫描</div>
-          <div class="sbc-btn alt disabled" id="sbc-stop-btn">停止</div>
-          <div class="sbc-btn alt disabled" id="sbc-skip-btn" title="跳过当前徽章">跳过当前</div>
-        </div>
-        <div class="sbc-progress" id="sbc-progress-wrap" style="display:none">
-          <div class="sbc-progress-bar" id="sbc-progress-bar" style="width:0"></div>
-          <div class="sbc-progress-text" id="sbc-progress-text">0/0</div>
-        </div>
-        <div class="sbc-summary" id="sbc-summary"></div>
-        <div class="sbc-status-text" id="sbc-status"></div>
-        <div class="sbc-game-list" id="sbc-list"></div>
-        <div id="sbc-log"></div>
       </div>
       <div class="sbc-footer">
-        <span class="sbc-label">V0.9.0 · 默认货币：人民币(CNY) · 仅扫描与价格估算</span>
+        <span class="sbc-label">V0.9.0 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -762,7 +828,7 @@
 
     const cfgIds = ["sbc-threshold", "sbc-scan-interval",
       "sbc-req-interval", "sbc-max-pages", "sbc-include-drops",
-      "sbc-batch-size", "sbc-batch-pause", "sbc-blacklist"];
+      "sbc-batch-size", "sbc-batch-pause"];
     cfgIds.forEach(id => {
       const el = document.getElementById(id);
       if (!el) return;
@@ -774,14 +840,73 @@
         state.cfg.includeDrops = document.getElementById("sbc-include-drops").checked;
         state.cfg.batchSize = parseInt(document.getElementById("sbc-batch-size").value, 10) || 18;
         state.cfg.batchPause = parseInt(document.getElementById("sbc-batch-pause").value, 10) || 15000;
-        state.cfg.blacklist = document.getElementById("sbc-blacklist").value.trim();
         saveConfig(state.cfg);
+      });
+    });
+
+    // Tab switching
+    modal.querySelectorAll(".sbc-tab").forEach(tab => {
+      tab.addEventListener("click", () => {
+        modal.querySelectorAll(".sbc-tab").forEach(t => t.classList.remove("active"));
+        tab.classList.add("active");
+        const tabName = tab.dataset.tab;
+        modal.querySelectorAll(".sbc-tab-content").forEach(c => c.classList.remove("active"));
+        document.getElementById(`sbc-tab-${tabName}`).classList.add("active");
+        if (tabName === "blacklist") renderBlacklist();
       });
     });
 
     document.getElementById("sbc-scan-btn").addEventListener("click", startScan);
     document.getElementById("sbc-stop-btn").addEventListener("click", requestStop);
     document.getElementById("sbc-skip-btn").addEventListener("click", skipCurrentBadge);
+
+    // Blacklist tab
+    let blLookupName = "";
+    document.getElementById("sbc-bl-lookup").addEventListener("click", () => {
+      const appid = document.getElementById("sbc-bl-appid").value.trim();
+      if (!appid || !/^\d+$/.test(appid)) {
+        document.getElementById("sbc-bl-result").textContent = "请输入有效的 AppID";
+        return;
+      }
+      document.getElementById("sbc-bl-result").textContent = "查询中...";
+      document.getElementById("sbc-bl-add").style.display = "none";
+      lookupGameName(appid).then(name => {
+        blLookupName = name;
+        document.getElementById("sbc-bl-result").textContent = name ? `${appid} — ${name}` : "未找到该游戏";
+        if (name) {
+          document.getElementById("sbc-bl-add").style.display = "";
+          document.getElementById("sbc-bl-add").dataset.appid = appid;
+          document.getElementById("sbc-bl-add").dataset.name = name;
+        }
+      });
+    });
+
+    document.getElementById("sbc-bl-add").addEventListener("click", function () {
+      const appid = this.dataset.appid;
+      const name = this.dataset.name;
+      if (!appid || !name) return;
+      const bl = state.cfg.blacklist ? state.cfg.blacklist.split(",").map(s => s.trim()).filter(Boolean) : [];
+      if (bl.includes(appid)) {
+        document.getElementById("sbc-bl-result").textContent = "该游戏已在黑名单中";
+        return;
+      }
+      bl.push(appid);
+      state.cfg.blacklist = bl.join(",");
+
+      let names = {};
+      try { names = JSON.parse(state.cfg.blacklistNames || "{}"); } catch (_) {}
+      names[appid] = name;
+      state.cfg.blacklistNames = JSON.stringify(names);
+
+      saveConfig(state.cfg);
+      document.getElementById("sbc-bl-add").style.display = "none";
+      document.getElementById("sbc-bl-result").textContent = `${name} 已加入黑名单`;
+      document.getElementById("sbc-bl-appid").value = "";
+      blLookupName = "";
+      renderBlacklist();
+    });
+
+    renderBlacklist();
   }
 
   function skipCurrentBadge() {
@@ -1135,6 +1260,7 @@
         <span class="sbc-full">单套最低价</span>
         <span class="sbc-lv5" title="满级价格不准, 绿色会准一些, 灰色不准">满级价格估算</span>
         <span class="sbc-drops">掉落</span>
+        <span class="sbc-select"></span>
       `;
       list.appendChild(hdr);
     }
@@ -1180,30 +1306,40 @@
   // Multibuy
   // ============================================================
   function openMultibuy(info) {
-    const missing = info.cards.filter(c => c.owned < 1 && c.marketHashName);
-    if (missing.length === 0) {
-      log(`${info.gameName}: 没有缺失卡牌，无需购买`, "info");
+    const cardsWithHash = info.cards.filter(c => c.marketHashName);
+    if (cardsWithHash.length === 0) {
+      log(`${info.gameName}: 无可用卡牌数据`, "warn");
       return;
     }
 
+    const params = new URLSearchParams();
+    params.set("appid", "753");
+
+    cardsWithHash.forEach(c => {
+      params.append("items[]", c.marketHashName);
+      params.append("qty[]", c.owned < 1 ? "1" : "0");
+    });
+
+    const profileUrl = getProfileUrl();
+    if (profileUrl) {
+      params.set("steamdb_return_to", `${profileUrl}/gamecards/${info.appid}/`);
+    }
+
+    const missing = cardsWithHash.filter(c => c.owned < 1);
     const buyData = {
       appid: info.appid,
       gameName: info.gameName,
       cards: missing.map(c => ({
         marketHashName: c.marketHashName,
-        lowestCents: c.lowestCents,
+        lowestCents: c.lowestCents || 0,
         name: c.name,
       })),
     };
 
     GM_setValue("sbc_multibuy_data", JSON.stringify(buyData));
 
-    const itemsParams = missing
-      .map(c => `items[]=${encodeURIComponent(c.marketHashName)}`)
-      .join("&");
-    const multibuyUrl = `https://steamcommunity.com/market/multibuy?${itemsParams}`;
-
-    log(`${info.gameName}: 打开批量购买页面 (${missing.length} 张卡牌)`, "ok");
+    const multibuyUrl = `https://steamcommunity.com/market/multibuy?${params.toString()}`;
+    log(`${info.gameName}: 打开批量购买 (${missing.length}/${cardsWithHash.length} 张待购)`, "ok");
     window.open(multibuyUrl, "_blank");
   }
 
@@ -1285,6 +1421,64 @@
       setTimeout(tryFill, 500);
     };
     tryFill();
+  }
+
+  // ============================================================
+  // Blacklist management
+  // ============================================================
+  async function lookupGameName(appid) {
+    try {
+      const profileUrl = getProfileUrl();
+      if (!profileUrl) return null;
+      const url = `${profileUrl}/gamecards/${appid}/`;
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) return null;
+      const html = await res.text();
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const titleEl = doc.querySelector(".badge_title");
+      if (titleEl) {
+        return (titleEl.querySelector(".badge_title_row")?.textContent || titleEl.textContent)
+          .replace(/(?:View badge progress|查看徽章进度|View details|查看详情|[\u200B\u200C\u200D\ufeff])/gi, "")
+          .replace(/徽章$/i, "").trim() || null;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function renderBlacklist() {
+    const list = document.getElementById("sbc-bl-list");
+    if (!list) return;
+    const bl = state.cfg.blacklist ? state.cfg.blacklist.split(",").map(s => s.trim()).filter(Boolean) : [];
+    let names = {};
+    try { names = JSON.parse(state.cfg.blacklistNames || "{}"); } catch (_) {}
+
+    if (bl.length === 0) {
+      list.innerHTML = `<div class="sbc-bl-row"><span style="color:#8f98a0">黑名单为空</span></div>`;
+      return;
+    }
+
+    list.innerHTML = bl.map(appid => {
+      const name = names[appid] || "(未知)";
+      return `<div class="sbc-bl-row">
+        <span class="sbc-bl-id">${appid}</span>
+        <span class="sbc-bl-name">${name}</span>
+        <span class="sbc-bl-del" data-appid="${appid}" title="移除">✕</span>
+      </div>`;
+    }).join("");
+
+    list.querySelectorAll(".sbc-bl-del").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const appid = btn.dataset.appid;
+        const newBl = bl.filter(a => a !== appid);
+        state.cfg.blacklist = newBl.join(",");
+        delete names[appid];
+        state.cfg.blacklistNames = JSON.stringify(names);
+        saveConfig(state.cfg);
+        renderBlacklist();
+      });
+    });
   }
 
   function requestStop() {
