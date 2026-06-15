@@ -1693,7 +1693,19 @@
   // ============================================================
   function addToBlacklist(appid, name, source, fixedVal = 0) {
     const bl = state.cfg.blacklist ? state.cfg.blacklist.split(",").map(s => s.trim()).filter(Boolean) : [];
-    if (bl.includes(appid)) return;
+
+    // Already in list: just update fixed flag if requested
+    if (bl.includes(appid)) {
+      if (fixedVal) {
+        let fixed = {};
+        try { fixed = JSON.parse(state.cfg.blacklistFixed || "{}"); } catch (_) {}
+        fixed[appid] = 1;
+        state.cfg.blacklistFixed = JSON.stringify(fixed);
+        saveConfig(state.cfg);
+      }
+      return;
+    }
+
     bl.push(appid);
     state.cfg.blacklist = bl.join(",");
 
