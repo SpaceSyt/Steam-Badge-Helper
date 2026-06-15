@@ -2,7 +2,7 @@
 // @name         Steam Badge Helper
 // @name:zh-CN   Steam 徽章助手
 // @namespace    https://github.com/SpaceSyt/Steam-Badge-Helper
-// @version      0.9.4
+// @version      0.9.5
 // @description  Scan Steam badges, batch query card prices, estimate full set costs
 // @description:zh-CN 扫描 Steam 徽章，批量查询卡牌价格，估算全套成本
 // @author       SpaceSyt
@@ -827,7 +827,7 @@
         </div>
       </div>
       <div class="sbc-footer">
-        <span class="sbc-label">V0.9.4 · 默认货币：人民币(CNY)</span>
+        <span class="sbc-label">V0.9.5 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -1394,38 +1394,90 @@
     let fillAttempted = false;
     const tryFill = () => {
       if (fillAttempted) return;
-      const inputs = document.querySelectorAll("input[type='text']");
-      console.log("[SBC] found", inputs.length, "text inputs on page");
 
-      // Group inputs by their parent row (find common ancestor per group of 2)
-      // Steam multibuy typically has [qty, price] pairs per item
-      const pairs = [];
-      const used = new Set();
-      for (let i = 0; i < inputs.length; i++) {
-        if (used.has(i)) continue;
-        // Find the next sibling input that's in the same parent
-        for (let j = i + 1; j < inputs.length; j++) {
-          if (used.has(j)) continue;
-          if (inputs[i].parentElement === inputs[j].parentElement ||
-              inputs[i].closest("tr") === inputs[j].closest("tr") ||
-              inputs[i].closest(".market_multibuy_item") === inputs[j].closest(".market_multibuy_item")) {
-            pairs.push({ qty: inputs[i], price: inputs[j] });
-            used.add(i);
-            used.add(j);
-            break;
+      // Find ALL input elements (not just type=text)
+      const allInputs = document.querySelectorAll("input");
+      console.log("[SBC] found", allInputs.length, "total inputs on page");
+
+      // Categorize: qty inputs vs price inputs
+      const qtyInputs = [];
+      const priceInputs = [];
+      allInputs.forEach(inp => {
+        const name = (inp.getAttribute("name") || "").toLowerCase();
+        const cls = (inp.className || "").toLowerCase();
+        const placeholder = (inp.getAttribute("placeholder") || "").toLowerCase();
+        const t = (inp.type || "").toLowerCase();
+
+        if (name.includes("qty") || name.includes("quantity") || cls.includes("quantity") || placeholder.includes("quantity")) {
+          qtyInputs.push(inp);
+        } else if (name.includes("price") || cls.includes("price") || placeholder.includes("price") || t === "number") {
+          priceInputs.push(inp);
+        } else if (t === "text") {
+          // Generic text input: determine role by position in row
+          const row = inp.closest("tr");
+          if (row) {
+            const textInputsInRow = row.querySelectorAll("input[type='text']");
+            if (textInputsInRow.length === 1 && textInputsInRow[0] === inp) {
+              // Only one text input in this row → it's the qty
+              qtyInputs.push(inp);
+            }
           }
         }
-      }
-      console.log("[SBC] grouped into", pairs.length, "pairs");
+      });
+      console.log("[SBC] qty inputs:", qtyInputs.length, "price inputs:", priceInputs.length);
 
-      if (pairs.length === 0) return;
+      // Group by parent row (tr or container)
+      const rows = new Map();
+      const getRowKey = (el) => {
+        const tr = el.closest("tr");
+        if (tr) return tr;
+        return el.closest(".market_multibuy_item") || el.closest(".multibuy_item_row") || el.parentElement;
+      };
+
+      // Collect all rows that have at least one of our inputs
+      const seenRows = new Set();
+      qtyInputs.forEach(inp => {
+        const row = getRowKey(inp);
+        if (!row) return;
+        if (!rows.has(row)) rows.set(row, { qty: null, price: null });
+        rows.get(row).qty = inp;
+        seenRows.add(row);
+      });
+      priceInputs.forEach(inp => {
+        const row = getRowKey(inp);
+        if (!row) return;
+        if (!rows.has(row)) rows.set(row, { qty: null, price: null });
+        rows.get(row).price = inp;
+        seenRows.add(row);
+      });
+
+      // Also try matching price inputs to qty rows by looking for price input in same tr
+      // If a qty row has no price, search for any input that could be price in the same tr
+      rows.forEach((fields, row) => {
+        if (!fields.price) {
+          const allInRow = row.querySelectorAll("input");
+          for (const inp of allInRow) {
+            if (inp !== fields.qty && (inp.type === "number" || inp.name.toLowerCase().includes("price") || inp.className.toLowerCase().includes("price"))) {
+              fields.price = inp;
+              break;
+            }
+          }
+          // Last resort: any non-qty input in the row
+          if (!fields.price) {
+            for (const inp of allInRow) {
+              if (inp !== fields.qty) { fields.price = inp; break; }
+            }
+          }
+        }
+      });
+
+      const entries = Array.from(rows.entries()).filter(([_, f]) => f.price);
+      console.log("[SBC] rows with price input:", entries.length);
 
       let filled = 0;
-      pairs.forEach((pair, idx) => {
-        const rowEl = pair.qty.closest("tr") || pair.qty.closest(".market_multibuy_item") || pair.qty.parentElement;
-        const rowText = rowEl ? rowEl.textContent.trim() : "";
+      entries.forEach(([row, fields], idx) => {
+        const rowText = row.textContent.trim();
 
-        // Match card by text content
         let card = null;
         for (const c of data.cards) {
           const terms = [c.name, c.marketHashName].filter(Boolean).map(t => decodeURIComponent(t));
@@ -1434,29 +1486,24 @@
             break;
           }
         }
-
-        // Fallback: match by index
-        if (!card && idx < data.cards.length) {
-          card = data.cards[idx];
-        }
+        if (!card && idx < data.cards.length) card = data.cards[idx];
 
         if (!card) {
-          console.log("[SBC] pair", idx, "unmatched, rowText:", rowText.substring(0, 100));
+          console.log("[SBC] unmatched row", idx, rowText.substring(0, 60));
           return;
         }
 
-        console.log("[SBC] matched card:", card.name, "qty:", card.qty, "price:", card.lowestCents);
-
-        pair.qty.value = String(card.qty || 1);
-        pair.qty.dispatchEvent(new Event("input", { bubbles: true }));
-        pair.qty.dispatchEvent(new Event("change", { bubbles: true }));
-
-        if (card.lowestCents != null) {
+        console.log("[SBC] matched:", card.name, "qty:", card.qty, "lowest:", card.lowestCents);
+        if (card.lowestCents != null && fields.price) {
           const p = ((card.lowestCents + bufferCents) / 100).toFixed(2);
-          console.log("[SBC] setting price:", p);
-          pair.price.value = p;
-          pair.price.dispatchEvent(new Event("input", { bubbles: true }));
-          pair.price.dispatchEvent(new Event("change", { bubbles: true }));
+          fields.price.value = p;
+          fields.price.dispatchEvent(new Event("input", { bubbles: true }));
+          fields.price.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        if (fields.qty) {
+          fields.qty.value = String(card.qty || 1);
+          fields.qty.dispatchEvent(new Event("input", { bubbles: true }));
+          fields.qty.dispatchEvent(new Event("change", { bubbles: true }));
         }
         filled++;
       });
@@ -1468,16 +1515,14 @@
       }
     };
 
-    // Poll quickly first, then use MutationObserver
     let pollCount = 0;
     const poll = () => {
       tryFill();
       if (fillAttempted || ++pollCount >= 20) return;
-      setTimeout(poll, 400);
+      setTimeout(poll, 500);
     };
-    setTimeout(poll, 500);
+    setTimeout(poll, 600);
 
-    // Also watch for DOM changes
     const observer = new MutationObserver(() => {
       if (!fillAttempted) tryFill();
     });
