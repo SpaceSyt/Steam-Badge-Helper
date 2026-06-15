@@ -2,7 +2,7 @@
 // @name         Steam Badge Helper
 // @name:zh-CN   Steam 徽章助手
 // @namespace    https://github.com/SpaceSyt/Steam-Badge-Helper
-// @version      1.0.5
+// @version      1.0.6
 // @description  Scan Steam badges, batch query card prices, estimate full set costs
 // @description:zh-CN 扫描 Steam 徽章，批量查询卡牌价格，估算全套成本
 // @author       SpaceSyt
@@ -44,6 +44,8 @@
     blacklist: "",
     blacklistNames: "{}",
     blacklistSources: "{}",
+    blacklistDates: "{}",
+    blacklistFixed: "{}",
     autoBlackThreshold: 10,
     autoBlackEnabled: false,
     buyMode: "complete5",
@@ -686,8 +688,12 @@
     .sbc-bl-row .sbc-bl-id { width: 70px; color: #66c0f4; font-family: monospace; }
     .sbc-bl-row .sbc-bl-name { flex: 1; color: #e2e2e2; }
     .sbc-bl-row .sbc-bl-source { width: 50px; color: #8f98a0; font-size: 12px; text-align: center; }
+    .sbc-bl-row .sbc-bl-date { width: 60px; color: #8f98a0; font-size: 12px; text-align: center; }
     .sbc-bl-row .sbc-bl-cb-hd { width: 24px; flex-shrink: 0; text-align: center; }
     .sbc-bl-cb { cursor: pointer; accent-color: #75b022; }
+    .sbc-bl-count { color: #8f98a0; font-size: 12px; margin-top: 6px; }
+    .sbc-bl-sep { color: #45556b; font-size: 12px; margin: 4px 0; padding-left: 8px; }
+    .sbc-bl-fixed { color: #75b022; }
 
     .sbc-bl-result { color: #75b022; font-size: 14px; }
 
@@ -840,6 +846,7 @@
             <label>输入游戏 AppID <input id="sbc-bl-appid" class="sbc-input" type="text" style="width:100px" placeholder="例如: 261640"></label>
             <div class="sbc-btn alt" id="sbc-bl-lookup">查询游戏</div>
             <div class="sbc-btn alt disabled" id="sbc-bl-del-sel">删除选中</div>
+            <div class="sbc-btn alt disabled" id="sbc-bl-cleanup">一键清理过期</div>
             <span class="sbc-bl-result" id="sbc-bl-result"></span>
           </div>
           <div class="sbc-bl-form">
@@ -854,10 +861,12 @@
             <span style="color:#8f98a0;font-size:12px;">扫描时超过此价格的游戏自动加入黑名单</span>
           </div>
           <div class="sbc-bl-list" id="sbc-bl-list"></div>
+          <div class="sbc-bl-list" id="sbc-bl-list-fixed" style="max-height:80px;margin-top:8px;"></div>
+          <div class="sbc-bl-count" id="sbc-bl-count"></div>
         </div>
       </div>
       <div class="sbc-footer">
-        <span class="sbc-label">V1.0.5 · 默认货币：人民币(CNY)</span>
+        <span class="sbc-label">V1.0.6 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -946,25 +955,61 @@
 
     document.getElementById("sbc-bl-del-sel").addEventListener("click", () => {
       const list = document.getElementById("sbc-bl-list");
+      const listFixed = document.getElementById("sbc-bl-list-fixed");
       if (!list) return;
-      const cbs = list.querySelectorAll(".sbc-bl-cb:checked");
-      if (cbs.length === 0) return;
+      const allCbs = [...list.querySelectorAll(".sbc-bl-cb:checked")];
+      if (listFixed) allCbs.push(...listFixed.querySelectorAll(".sbc-bl-cb:checked"));
+      if (allCbs.length === 0) return;
       const bl = state.cfg.blacklist ? state.cfg.blacklist.split(",").map(s => s.trim()).filter(Boolean) : [];
       let names = {};
       try { names = JSON.parse(state.cfg.blacklistNames || "{}"); } catch (_) {}
       let sources = {};
       try { sources = JSON.parse(state.cfg.blacklistSources || "{}"); } catch (_) {}
-      cbs.forEach(cb => {
+      let dates = {};
+      try { dates = JSON.parse(state.cfg.blacklistDates || "{}"); } catch (_) {}
+      let fixed = {};
+      try { fixed = JSON.parse(state.cfg.blacklistFixed || "{}"); } catch (_) {}
+      allCbs.forEach(cb => {
         const appid = cb.dataset.appid;
         const idx = bl.indexOf(appid);
         if (idx >= 0) bl.splice(idx, 1);
-        delete names[appid];
-        delete sources[appid];
+        delete names[appid]; delete sources[appid]; delete dates[appid]; delete fixed[appid];
       });
       state.cfg.blacklist = bl.join(",");
       state.cfg.blacklistNames = JSON.stringify(names);
       state.cfg.blacklistSources = JSON.stringify(sources);
+      state.cfg.blacklistDates = JSON.stringify(dates);
+      state.cfg.blacklistFixed = JSON.stringify(fixed);
       saveConfig(state.cfg);
+      renderBlacklist();
+    });
+
+    document.getElementById("sbc-bl-cleanup").addEventListener("click", () => {
+      const bl = state.cfg.blacklist ? state.cfg.blacklist.split(",").map(s => s.trim()).filter(Boolean) : [];
+      let names = {};
+      try { names = JSON.parse(state.cfg.blacklistNames || "{}"); } catch (_) {}
+      let sources = {};
+      try { sources = JSON.parse(state.cfg.blacklistSources || "{}"); } catch (_) {}
+      let dates = {};
+      try { dates = JSON.parse(state.cfg.blacklistDates || "{}"); } catch (_) {}
+      let fixed = {};
+      try { fixed = JSON.parse(state.cfg.blacklistFixed || "{}"); } catch (_) {}
+      const now = Date.now();
+      const expired = bl.filter(a => !fixed[a] && dates[a] && (now - dates[a] > 7 * 86400000));
+      if (expired.length === 0) {
+        document.getElementById("sbc-bl-result").textContent = "没有可清理的过期项";
+        return;
+      }
+      if (!confirm(`将清理 ${expired.length} 项过期（>7天）自动黑名单，确定？`)) return;
+      const keep = bl.filter(a => !expired.includes(a));
+      expired.forEach(a => { delete names[a]; delete sources[a]; delete dates[a]; delete fixed[a]; });
+      state.cfg.blacklist = keep.join(",");
+      state.cfg.blacklistNames = JSON.stringify(names);
+      state.cfg.blacklistSources = JSON.stringify(sources);
+      state.cfg.blacklistDates = JSON.stringify(dates);
+      state.cfg.blacklistFixed = JSON.stringify(fixed);
+      saveConfig(state.cfg);
+      document.getElementById("sbc-bl-result").textContent = `已清理 ${expired.length} 项`;
       renderBlacklist();
     });
 
@@ -1624,6 +1669,11 @@
     sources[appid] = source;
     state.cfg.blacklistSources = JSON.stringify(sources);
 
+    let dates = {};
+    try { dates = JSON.parse(state.cfg.blacklistDates || "{}"); } catch (_) {}
+    dates[appid] = Date.now();
+    state.cfg.blacklistDates = JSON.stringify(dates);
+
     saveConfig(state.cfg);
   }
 
@@ -1652,56 +1702,84 @@
 
   function renderBlacklist() {
     const list = document.getElementById("sbc-bl-list");
+    const listFixed = document.getElementById("sbc-bl-list-fixed");
+    const countEl = document.getElementById("sbc-bl-count");
     if (!list) return;
     const bl = state.cfg.blacklist ? state.cfg.blacklist.split(",").map(s => s.trim()).filter(Boolean) : [];
     let names = {};
     try { names = JSON.parse(state.cfg.blacklistNames || "{}"); } catch (_) {}
     let sources = {};
     try { sources = JSON.parse(state.cfg.blacklistSources || "{}"); } catch (_) {}
+    let dates = {};
+    try { dates = JSON.parse(state.cfg.blacklistDates || "{}"); } catch (_) {}
+    let fixed = {};
+    try { fixed = JSON.parse(state.cfg.blacklistFixed || "{}"); } catch (_) {}
 
     const sourceLabels = { "0": "手动", "1": "自动" };
+    const normal = bl.filter(a => !fixed[a]);
+    const fixedList = bl.filter(a => fixed[a]);
 
-    if (bl.length === 0) {
-      list.innerHTML = `<div class="sbc-bl-row"><span style="color:#8f98a0">黑名单为空</span></div>`;
-      const delBtn = document.getElementById("sbc-bl-del-sel");
-      if (delBtn) { delBtn.classList.add("disabled"); delBtn.classList.remove("sbc-btn-danger"); }
-      return;
-    }
+    const formatDate = ts => {
+      const d = new Date(ts);
+      return `${d.getMonth()+1}/${d.getDate()}`;
+    };
 
-    const delBtn = document.getElementById("sbc-bl-del-sel");
-    if (delBtn) { delBtn.classList.add("disabled"); delBtn.classList.remove("sbc-btn-danger"); }
-
-    list.innerHTML = `<div class="sbc-bl-row sbc-row-header">
-        <span class="sbc-bl-id">游戏ID</span>
-        <span class="sbc-bl-name">游戏名</span>
-        <span class="sbc-bl-source">来源</span>
-        <span class="sbc-bl-cb-hd"></span>
-      </div>` + bl.map(appid => {
+    const renderItems = (items) => items.map(appid => {
       const name = names[appid] || "—";
       const src = sourceLabels[sources[appid]] || "—";
+      const dateStr = dates[appid] ? formatDate(dates[appid]) : "—";
       return `<div class="sbc-bl-row">
         <span class="sbc-bl-id">${appid}</span>
         <span class="sbc-bl-name">${name}</span>
         <span class="sbc-bl-source">${src}</span>
+        <span class="sbc-bl-date">${dateStr}</span>
         <span class="sbc-bl-cb-hd"><input type="checkbox" class="sbc-bl-cb" data-appid="${appid}"></span>
       </div>`;
     }).join("");
 
-    // Update "删除选中" button state on checkbox change
-    list.querySelectorAll(".sbc-bl-cb").forEach(cb => {
+    if (normal.length === 0 && fixedList.length === 0) {
+      list.innerHTML = `<div class="sbc-bl-row"><span style="color:#8f98a0">黑名单为空</span></div>`;
+      if (listFixed) listFixed.innerHTML = "";
+      if (countEl) countEl.textContent = "";
+    } else {
+      list.innerHTML = `<div class="sbc-bl-row sbc-row-header">
+          <span class="sbc-bl-id">游戏ID</span>
+          <span class="sbc-bl-name">游戏名</span>
+          <span class="sbc-bl-source">来源</span>
+          <span class="sbc-bl-date">添加日期</span>
+          <span class="sbc-bl-cb-hd"></span>
+        </div>` + (normal.length > 0 ? renderItems(normal) : `<div class="sbc-bl-row"><span style="color:#8f98a0">—</span></div>`);
+      if (countEl) countEl.innerHTML = `共 <b>${bl.length}</b> 项（固定 <b>${fixedList.length}</b>）`;
+    }
+
+    if (listFixed && fixedList.length > 0) {
+      listFixed.innerHTML = `<div class="sbc-bl-sep">固定黑名单</div>` + renderItems(fixedList);
+    } else if (listFixed) {
+      listFixed.innerHTML = "";
+    }
+
+    const delBtn = document.getElementById("sbc-bl-del-sel");
+    if (delBtn) { delBtn.classList.add("disabled"); delBtn.classList.remove("sbc-btn-danger"); }
+    const cleanupBtn = document.getElementById("sbc-bl-cleanup");
+    if (cleanupBtn) { cleanupBtn.classList.add("disabled"); cleanupBtn.classList.remove("sbc-btn-danger"); }
+
+    const allCbs = [...list.querySelectorAll(".sbc-bl-cb")];
+    if (listFixed) allCbs.push(...listFixed.querySelectorAll(".sbc-bl-cb"));
+    allCbs.forEach(cb => {
       cb.addEventListener("change", () => {
-        const delBtn = document.getElementById("sbc-bl-del-sel");
-        if (!delBtn) return;
-        const anyChecked = list.querySelectorAll(".sbc-bl-cb:checked").length > 0;
-        if (anyChecked) {
-          delBtn.classList.remove("disabled");
-          delBtn.classList.add("sbc-btn-danger");
-        } else {
-          delBtn.classList.add("disabled");
-          delBtn.classList.remove("sbc-btn-danger");
+        if (delBtn) {
+          const anyChecked = [...list.querySelectorAll(".sbc-bl-cb:checked")].length > 0
+            || (listFixed && [...listFixed.querySelectorAll(".sbc-bl-cb:checked")].length > 0);
+          if (anyChecked) { delBtn.classList.remove("disabled"); delBtn.classList.add("sbc-btn-danger"); }
+          else { delBtn.classList.add("disabled"); delBtn.classList.remove("sbc-btn-danger"); }
         }
       });
     });
+
+    if (cleanupBtn) {
+      const hasExpired = bl.some(a => !fixed[a] && dates[a] && (Date.now() - dates[a] > 7 * 86400000));
+      if (hasExpired) { cleanupBtn.classList.remove("disabled"); cleanupBtn.classList.add("sbc-btn-danger"); }
+    }
   }
 
   function requestStop() {
