@@ -2,7 +2,7 @@
 // @name         Steam Badge Helper
 // @name:zh-CN   Steam 徽章助手
 // @namespace    https://github.com/SpaceSyt/Steam-Badge-Helper
-// @version      1.0.3
+// @version      1.0.4
 // @description  Scan Steam badges, batch query card prices, estimate full set costs
 // @description:zh-CN 扫描 Steam 徽章，批量查询卡牌价格，估算全套成本
 // @author       SpaceSyt
@@ -43,6 +43,8 @@
     maxBadgePages: 1,
     blacklist: "",
     blacklistNames: "{}",
+    blacklistSources: "{}",
+    autoBlackThreshold: 10,
     buyMode: "complete5",
     buffer: 0.10,
   };
@@ -128,7 +130,7 @@
               this.queue.unshift(job);
               const backoff = [20000, 20000, 45000, 90000, 180000, 360000][this._consecutive429 - 1] || 360000;
               if (this.onStatus) this.onStatus(`限流冷却中 (第${this._consecutive429}次, ${(backoff/1000).toFixed(0)}s)`, true);
-              if (this._consecutive429 >= 4 && !this._429Warned && this.onLog) {
+              if (this._consecutive429 >= 3 && !this._429Warned && this.onLog) {
                 this._429Warned = true;
                 this.onLog("Steam 可能暂时限制了此 IP 访问价格 API，建议更换 IP 或等候几小时", "warn-ip");
               }
@@ -676,8 +678,9 @@
     .sbc-bl-row:hover { background: rgba(103,193,245,0.08); }
     .sbc-bl-row .sbc-bl-id { width: 70px; color: #66c0f4; font-family: monospace; }
     .sbc-bl-row .sbc-bl-name { flex: 1; color: #e2e2e2; }
-    .sbc-bl-row .sbc-bl-del { color: #c04040; cursor: pointer; font-size: 16px; user-select: none; }
-    .sbc-bl-row .sbc-bl-del:hover { color: #ff6060; }
+    .sbc-bl-row .sbc-bl-source { width: 50px; color: #8f98a0; font-size: 12px; text-align: center; }
+    .sbc-bl-row .sbc-bl-cb-hd { width: 24px; flex-shrink: 0; text-align: center; }
+    .sbc-bl-cb { cursor: pointer; accent-color: #75b022; }
 
     .sbc-bl-result { color: #75b022; font-size: 14px; }
 
@@ -829,16 +832,21 @@
           <div class="sbc-bl-form">
             <label>游戏 AppID <input id="sbc-bl-appid" class="sbc-input" type="text" style="width:100px" placeholder="例如: 261640"></label>
             <div class="sbc-btn alt" id="sbc-bl-lookup">查询游戏</div>
+            <div class="sbc-btn alt" id="sbc-bl-del-sel" style="display:none;">删除选中</div>
             <span class="sbc-bl-result" id="sbc-bl-result"></span>
           </div>
           <div class="sbc-bl-form">
             <div class="sbc-btn" id="sbc-bl-add" style="display:none;">加入黑名单</div>
           </div>
+          <div class="sbc-bl-form">
+            <label class="sbc-primary-label">自动黑名单价格上限 ¥ <input id="sbc-auto-bl-threshold" class="sbc-input" type="number" min="0" step="0.5" value="${state.cfg.autoBlackThreshold}" style="width:70px"></label>
+            <span style="color:#8f98a0;font-size:12px;">扫描时超过此价格的游戏自动加入黑名单</span>
+          </div>
           <div class="sbc-bl-list" id="sbc-bl-list"></div>
         </div>
       </div>
       <div class="sbc-footer">
-        <span class="sbc-label">V1.0.3 · 默认货币：人民币(CNY)</span>
+        <span class="sbc-label">V1.0.4 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -882,7 +890,14 @@
     document.getElementById("sbc-stop-btn").addEventListener("click", requestStop);
     document.getElementById("sbc-skip-btn").addEventListener("click", skipCurrentBadge);
 
+    // Auto blacklist threshold
+    document.getElementById("sbc-auto-bl-threshold").addEventListener("change", () => {
+      state.cfg.autoBlackThreshold = parseFloat(document.getElementById("sbc-auto-bl-threshold").value) || 0;
+      saveConfig(state.cfg);
+    });
+
     // Blacklist tab
+    // Source: 0 = manual (query+add), 1 = auto (scan threshold)
     let blLookupAppid = "";
     let blLookupName = "";
     document.getElementById("sbc-bl-lookup").addEventListener("click", () => {
@@ -905,25 +920,36 @@
 
     document.getElementById("sbc-bl-add").addEventListener("click", () => {
       if (!blLookupAppid || !blLookupName) return;
-      const bl = state.cfg.blacklist ? state.cfg.blacklist.split(",").map(s => s.trim()).filter(Boolean) : [];
-      if (bl.includes(blLookupAppid)) {
-        document.getElementById("sbc-bl-result").textContent = "该游戏已在黑名单中";
-        return;
-      }
-      bl.push(blLookupAppid);
-      state.cfg.blacklist = bl.join(",");
-
-      let names = {};
-      try { names = JSON.parse(state.cfg.blacklistNames || "{}"); } catch (_) {}
-      names[blLookupAppid] = blLookupName;
-      state.cfg.blacklistNames = JSON.stringify(names);
-
-      saveConfig(state.cfg);
+      addToBlacklist(blLookupAppid, blLookupName, 0);
       document.getElementById("sbc-bl-add").style.display = "none";
       document.getElementById("sbc-bl-result").textContent = `${blLookupName} 已加入黑名单`;
       document.getElementById("sbc-bl-appid").value = "";
       blLookupAppid = "";
       blLookupName = "";
+      renderBlacklist();
+    });
+
+    document.getElementById("sbc-bl-del-sel").addEventListener("click", () => {
+      const list = document.getElementById("sbc-bl-list");
+      if (!list) return;
+      const cbs = list.querySelectorAll(".sbc-bl-cb:checked");
+      if (cbs.length === 0) return;
+      const bl = state.cfg.blacklist ? state.cfg.blacklist.split(",").map(s => s.trim()).filter(Boolean) : [];
+      let names = {};
+      try { names = JSON.parse(state.cfg.blacklistNames || "{}"); } catch (_) {}
+      let sources = {};
+      try { sources = JSON.parse(state.cfg.blacklistSources || "{}"); } catch (_) {}
+      cbs.forEach(cb => {
+        const appid = cb.dataset.appid;
+        const idx = bl.indexOf(appid);
+        if (idx >= 0) bl.splice(idx, 1);
+        delete names[appid];
+        delete sources[appid];
+      });
+      state.cfg.blacklist = bl.join(",");
+      state.cfg.blacklistNames = JSON.stringify(names);
+      state.cfg.blacklistSources = JSON.stringify(sources);
+      saveConfig(state.cfg);
       renderBlacklist();
     });
 
@@ -1222,6 +1248,14 @@
           info.cheapestSetCNY = formatCNY(setCostCents);
           info.fullSetCNY = formatCNY(fullSetCostCents);
           info.level5CNY = formatCNY(level5CostCents);
+
+          const autoBlCents = Math.round((state.cfg.autoBlackThreshold || 0) * 100);
+          if (autoBlCents > 0 && fullSetCostCents > autoBlCents) {
+            addToBlacklist(b.appid, info.gameName || b.gameName || "", 1);
+            log(`  → 自动加入黑名单: 全套 ¥${info.fullSetCNY} > ¥${state.cfg.autoBlackThreshold}`, "info");
+            skipped++;
+            continue;
+          }
 
           if (fullSetCostCents > thresholdCents) {
             log(`  → 整套卡牌价格已大于上限(¥${info.fullSetCNY} > ¥${cfg.threshold})，跳过`, "info");
@@ -1557,7 +1591,27 @@
 
   // ============================================================
   // Blacklist management
+  // Source: 0 = 手动 (manual query+add), 1 = 自动 (auto threshold during scan)
   // ============================================================
+  function addToBlacklist(appid, name, source) {
+    const bl = state.cfg.blacklist ? state.cfg.blacklist.split(",").map(s => s.trim()).filter(Boolean) : [];
+    if (bl.includes(appid)) return;
+    bl.push(appid);
+    state.cfg.blacklist = bl.join(",");
+
+    let names = {};
+    try { names = JSON.parse(state.cfg.blacklistNames || "{}"); } catch (_) {}
+    names[appid] = name;
+    state.cfg.blacklistNames = JSON.stringify(names);
+
+    let sources = {};
+    try { sources = JSON.parse(state.cfg.blacklistSources || "{}"); } catch (_) {}
+    sources[appid] = source;
+    state.cfg.blacklistSources = JSON.stringify(sources);
+
+    saveConfig(state.cfg);
+  }
+
   async function lookupGameName(appid) {
     try {
       const profileUrl = getProfileUrl();
@@ -1571,7 +1625,7 @@
       if (titleEl) {
         return (titleEl.querySelector(".badge_title_row")?.textContent || titleEl.textContent)
           .replace(/(?:View badge progress|查看徽章进度|View details|查看详情|[\u200B\u200C\u200D\ufeff])/gi, "")
-          .replace(/徽章$/i, "").trim() || null;
+          .trim() || null;
       }
       return null;
     } catch (_) {
@@ -1585,32 +1639,34 @@
     const bl = state.cfg.blacklist ? state.cfg.blacklist.split(",").map(s => s.trim()).filter(Boolean) : [];
     let names = {};
     try { names = JSON.parse(state.cfg.blacklistNames || "{}"); } catch (_) {}
+    let sources = {};
+    try { sources = JSON.parse(state.cfg.blacklistSources || "{}"); } catch (_) {}
+
+    const sourceLabels = { "0": "手动", "1": "自动" };
 
     if (bl.length === 0) {
       list.innerHTML = `<div class="sbc-bl-row"><span style="color:#8f98a0">黑名单为空</span></div>`;
+      document.getElementById("sbc-bl-del-sel").style.display = "none";
       return;
     }
 
-    list.innerHTML = bl.map(appid => {
+    document.getElementById("sbc-bl-del-sel").style.display = "";
+
+    list.innerHTML = `<div class="sbc-bl-row sbc-row-header">
+        <span class="sbc-bl-cb-hd"></span>
+        <span class="sbc-bl-id">游戏ID</span>
+        <span class="sbc-bl-name">游戏名</span>
+        <span class="sbc-bl-source">来源</span>
+      </div>` + bl.map(appid => {
       const name = names[appid] || "—";
+      const src = sourceLabels[sources[appid]] || "—";
       return `<div class="sbc-bl-row">
+        <span class="sbc-bl-cb-hd"><input type="checkbox" class="sbc-bl-cb" data-appid="${appid}"></span>
         <span class="sbc-bl-id">${appid}</span>
         <span class="sbc-bl-name">${name}</span>
-        <span class="sbc-bl-del" data-appid="${appid}" title="移除">✕</span>
+        <span class="sbc-bl-source">${src}</span>
       </div>`;
     }).join("");
-
-    list.querySelectorAll(".sbc-bl-del").forEach(btn => {
-      btn.addEventListener("click", () => {
-        const appid = btn.dataset.appid;
-        const newBl = bl.filter(a => a !== appid);
-        state.cfg.blacklist = newBl.join(",");
-        delete names[appid];
-        state.cfg.blacklistNames = JSON.stringify(names);
-        saveConfig(state.cfg);
-        renderBlacklist();
-      });
-    });
   }
 
   function requestStop() {
