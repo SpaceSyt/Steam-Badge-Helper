@@ -2,7 +2,7 @@
 // @name         Steam Badge Helper
 // @name:zh-CN   Steam 徽章助手
 // @namespace    https://github.com/SpaceSyt/Steam-Badge-Helper
-// @version      1.0.4.1
+// @version      1.0.5
 // @description  Scan Steam badges, batch query card prices, estimate full set costs
 // @description:zh-CN 扫描 Steam 徽章，批量查询卡牌价格，估算全套成本
 // @author       SpaceSyt
@@ -795,9 +795,9 @@
       <div class="sbc-body">
         <div class="sbc-tabs">
           <span class="sbc-tab active" data-tab="scan">价格扫描</span>
+          <span class="sbc-tab sbc-tab-disabled" title="未实现">闪卡价格扫描</span>
           <span class="sbc-tab" data-tab="blacklist">黑名单</span>
           <span class="sbc-tab sbc-tab-disabled" title="未实现">多余卡牌检测</span>
-          <span class="sbc-tab sbc-tab-disabled" title="未实现">闪卡价格扫描</span>
         </div>
         <div class="sbc-tab-content active" id="sbc-tab-scan">
           <div class="sbc-toolbar">
@@ -857,7 +857,7 @@
         </div>
       </div>
       <div class="sbc-footer">
-        <span class="sbc-label">V1.0.4.1 · 默认货币：人民币(CNY)</span>
+        <span class="sbc-label">V1.0.5 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -1640,7 +1640,9 @@
       if (titleEl) {
         return (titleEl.querySelector(".badge_title_row")?.textContent || titleEl.textContent)
           .replace(/(?:View badge progress|查看徽章进度|View details|查看详情|[\u200B\u200C\u200D\ufeff])/gi, "")
-          .replace(/徽章$/, "").trim() || null;
+          .trim()
+          .replace(/\s*徽章\s*$/, "")
+          .trim() || null;
       }
       return null;
     } catch (_) {
