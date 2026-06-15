@@ -2,7 +2,7 @@
 // @name         Steam Badge Helper
 // @name:zh-CN   Steam 徽章助手
 // @namespace    https://github.com/SpaceSyt/Steam-Badge-Helper
-// @version      0.9.3
+// @version      0.9.4
 // @description  Scan Steam badges, batch query card prices, estimate full set costs
 // @description:zh-CN 扫描 Steam 徽章，批量查询卡牌价格，估算全套成本
 // @author       SpaceSyt
@@ -827,7 +827,7 @@
         </div>
       </div>
       <div class="sbc-footer">
-        <span class="sbc-label">V0.9.3 · 默认货币：人民币(CNY)</span>
+        <span class="sbc-label">V0.9.4 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -1375,74 +1375,114 @@
   }
 
   function initMultibuyAutoFill() {
+    console.log("[SBC] multibuy auto-fill init");
+
     let data;
     try {
       const raw = GM_getValue("sbc_multibuy_data", null);
-      if (!raw) return;
+      if (!raw) { console.log("[SBC] no multibuy data in storage"); return; }
       data = JSON.parse(raw);
-    } catch (_) { return; }
+    } catch (_) { console.log("[SBC] failed to parse multibuy data"); return; }
 
-    if (!data || !data.cards || data.cards.length === 0) return;
+    if (!data || !data.cards || data.cards.length === 0) {
+      console.log("[SBC] multibuy data empty"); return;
+    }
 
+    console.log("[SBC] loaded data:", data.cards.length, "cards, bufferCents:", data.bufferCents);
     const bufferCents = data.bufferCents || 0;
 
-    const fillForm = () => {
-      let items = document.querySelectorAll(
-        ".market_multibuy_item, .multibuy_item_row, .multibuy_row, #market_multibuy_dialog tr, #market_multibuy_dialog .market_listing_row"
-      );
-      if (items.length === 0) return false;
+    let fillAttempted = false;
+    const tryFill = () => {
+      if (fillAttempted) return;
+      const inputs = document.querySelectorAll("input[type='text']");
+      console.log("[SBC] found", inputs.length, "text inputs on page");
+
+      // Group inputs by their parent row (find common ancestor per group of 2)
+      // Steam multibuy typically has [qty, price] pairs per item
+      const pairs = [];
+      const used = new Set();
+      for (let i = 0; i < inputs.length; i++) {
+        if (used.has(i)) continue;
+        // Find the next sibling input that's in the same parent
+        for (let j = i + 1; j < inputs.length; j++) {
+          if (used.has(j)) continue;
+          if (inputs[i].parentElement === inputs[j].parentElement ||
+              inputs[i].closest("tr") === inputs[j].closest("tr") ||
+              inputs[i].closest(".market_multibuy_item") === inputs[j].closest(".market_multibuy_item")) {
+            pairs.push({ qty: inputs[i], price: inputs[j] });
+            used.add(i);
+            used.add(j);
+            break;
+          }
+        }
+      }
+      console.log("[SBC] grouped into", pairs.length, "pairs");
+
+      if (pairs.length === 0) return;
 
       let filled = 0;
+      pairs.forEach((pair, idx) => {
+        const rowEl = pair.qty.closest("tr") || pair.qty.closest(".market_multibuy_item") || pair.qty.parentElement;
+        const rowText = rowEl ? rowEl.textContent.trim() : "";
 
-      items.forEach(item => {
-        const itemText = item.textContent.trim();
-        let matchedCard = null;
-
-        // Match by searching item text for card name or market hash
-        for (const card of data.cards) {
-          const searchTerms = [card.name, card.marketHashName].filter(Boolean);
-          for (const term of searchTerms) {
-            const decoded = decodeURIComponent(term);
-            if (decoded && itemText.indexOf(decoded) >= 0) {
-              matchedCard = card;
-              break;
-            }
+        // Match card by text content
+        let card = null;
+        for (const c of data.cards) {
+          const terms = [c.name, c.marketHashName].filter(Boolean).map(t => decodeURIComponent(t));
+          if (terms.some(t => t && rowText.indexOf(t) >= 0)) {
+            card = c;
+            break;
           }
-          if (matchedCard) break;
-        }
-        if (!matchedCard) return;
-
-        const allInputs = item.querySelectorAll("input[type='text'], input:not([type])");
-        if (allInputs.length < 2) return;
-
-        const qtyInput = allInputs[0];
-        const priceInput = allInputs[1];
-
-        qtyInput.value = String(matchedCard.qty || 1);
-        qtyInput.dispatchEvent(new Event("input", { bubbles: true }));
-        qtyInput.dispatchEvent(new Event("change", { bubbles: true }));
-
-        if (matchedCard.lowestCents != null) {
-          priceInput.value = ((matchedCard.lowestCents + bufferCents) / 100).toFixed(2);
-          priceInput.dispatchEvent(new Event("input", { bubbles: true }));
-          priceInput.dispatchEvent(new Event("change", { bubbles: true }));
         }
 
+        // Fallback: match by index
+        if (!card && idx < data.cards.length) {
+          card = data.cards[idx];
+        }
+
+        if (!card) {
+          console.log("[SBC] pair", idx, "unmatched, rowText:", rowText.substring(0, 100));
+          return;
+        }
+
+        console.log("[SBC] matched card:", card.name, "qty:", card.qty, "price:", card.lowestCents);
+
+        pair.qty.value = String(card.qty || 1);
+        pair.qty.dispatchEvent(new Event("input", { bubbles: true }));
+        pair.qty.dispatchEvent(new Event("change", { bubbles: true }));
+
+        if (card.lowestCents != null) {
+          const p = ((card.lowestCents + bufferCents) / 100).toFixed(2);
+          console.log("[SBC] setting price:", p);
+          pair.price.value = p;
+          pair.price.dispatchEvent(new Event("input", { bubbles: true }));
+          pair.price.dispatchEvent(new Event("change", { bubbles: true }));
+        }
         filled++;
       });
 
       if (filled > 0) {
+        console.log("[SBC] filled", filled, "items, clearing storage");
+        fillAttempted = true;
         GM_setValue("sbc_multibuy_data", null);
       }
-      return filled > 0;
     };
 
-    let attempts = 0;
-    const tryFill = () => {
-      if (fillForm() || ++attempts >= 15) return;
-      setTimeout(tryFill, 600);
+    // Poll quickly first, then use MutationObserver
+    let pollCount = 0;
+    const poll = () => {
+      tryFill();
+      if (fillAttempted || ++pollCount >= 20) return;
+      setTimeout(poll, 400);
     };
-    setTimeout(tryFill, 300);
+    setTimeout(poll, 500);
+
+    // Also watch for DOM changes
+    const observer = new MutationObserver(() => {
+      if (!fillAttempted) tryFill();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    setTimeout(() => observer.disconnect(), 15000);
   }
 
   // ============================================================
