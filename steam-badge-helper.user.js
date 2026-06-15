@@ -2,7 +2,7 @@
 // @name         Steam Badge Helper
 // @name:zh-CN   Steam 徽章助手
 // @namespace    https://github.com/SpaceSyt/Steam-Badge-Helper
-// @version      1.0.0
+// @version      1.0.1
 // @description  Scan Steam badges, batch query card prices, estimate full set costs
 // @description:zh-CN 扫描 Steam 徽章，批量查询卡牌价格，估算全套成本
 // @author       SpaceSyt
@@ -580,21 +580,21 @@
       color: #75b022;
       font-weight: bold;
       font-size: 13px;
-      text-align: right;
+      text-align: center;
     }
     .sbc-game-row .sbc-full {
       width: 80px;
       flex-shrink: 0;
       color: #ffc902;
       font-size: 12px;
-      text-align: right;
+      text-align: center;
     }
     .sbc-game-row .sbc-lv5 {
       width: 80px;
       flex-shrink: 0;
       color: #e74c3c;
       font-size: 12px;
-      text-align: right;
+      text-align: center;
     }
     .sbc-game-row .sbc-drops {
       width: 55px;
@@ -639,6 +639,7 @@
     }
     .sbc-tab:hover { color: #fff; background: rgba(103,193,245,0.1); }
     .sbc-tab.active { color: #fff; background: #1b2838; border: 1px solid #45556b; border-bottom-color: #1b2838; }
+    .sbc-tab-disabled { color: #555; cursor: not-allowed; opacity: 0.5; }
     .sbc-tab-content { display: none; }
     .sbc-tab-content.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 
@@ -777,6 +778,8 @@
         <div class="sbc-tabs">
           <span class="sbc-tab active" data-tab="scan">价格扫描</span>
           <span class="sbc-tab" data-tab="blacklist">黑名单</span>
+          <span class="sbc-tab sbc-tab-disabled" title="未实现">多余卡牌检测</span>
+          <span class="sbc-tab sbc-tab-disabled" title="未实现">闪卡价格扫描</span>
         </div>
         <div class="sbc-tab-content active" id="sbc-tab-scan">
           <div class="sbc-toolbar">
@@ -827,7 +830,7 @@
         </div>
       </div>
       <div class="sbc-footer">
-        <span class="sbc-label">V1.0.0 · 默认货币：人民币(CNY)</span>
+        <span class="sbc-label">V1.0.1 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -1268,7 +1271,7 @@
         <span class="sbc-cards">卡牌</span>
         <span class="sbc-cost">单套补全价</span>
         <span class="sbc-full">单套最低价</span>
-        <span class="sbc-lv5" title="满级价格不准, 绿色会准一些, 灰色不准">满级价格估算</span>
+        <span class="sbc-lv5">满级价格估算 <span style="cursor:help;color:#8f98a0;font-size:11px;" title="绿色:近期有成交(volume>1)较准&#10;灰色:无近期成交(volume=0)不准&#10;红色(默认):仅有1次成交，参考性一般">?</span></span>
         <span class="sbc-drops">掉落</span>
         <span class="sbc-select"></span>
       `;
