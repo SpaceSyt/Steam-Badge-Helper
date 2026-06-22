@@ -617,6 +617,12 @@
       flex-shrink: 0;
       text-align: center;
     }
+    .sbc-sortable {
+      cursor: pointer;
+      user-select: none;
+    }
+    .sbc-sortable:hover { color: #fff; }
+    .sbc-sort-arrow { font-size: 10px; }
     .sbc-toolbar {
       display: flex;
       gap: 14px;
@@ -769,6 +775,8 @@
     stopRequested: false,
     skipCurrent: false,
     queue: null,
+    sortKey: null,
+    sortAsc: true,
   };
 
   function openModal() {
@@ -1110,7 +1118,8 @@
     const el = document.getElementById("sbc-status");
     if (!el) return;
     if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
-    if (!text) { el.textContent = ""; return; }
+    if (!text) { el.textContent = ""; el.style.display = "none"; return; }
+    el.style.display = "";
     if (!animate) { el.textContent = text; return; }
     el.textContent = text;
     let dots = 0;
@@ -1395,26 +1404,65 @@
   // ============================================================
   // Render game row
   // ============================================================
-  function renderGameRow(info) {
-    const list = document.getElementById("sbc-list");
-    // add header on first row
-    if (list.children.length === 0) {
-      const hdr = document.createElement("div");
-      hdr.className = "sbc-game-row sbc-row-header";
-      hdr.innerHTML = `
-        <span class="sbc-appid">游戏ID</span>
-        <span class="sbc-name">游戏名</span>
-        <span class="sbc-level">等级</span>
-        <span class="sbc-cards">卡牌</span>
-        <span class="sbc-cost">单套补全价</span>
-        <span class="sbc-full">单套最低价</span>
-        <span class="sbc-lv5">满级价格估算 <span style="cursor:help;color:#8f98a0;font-size:11px;" title="绿色:近期成交>1，参考性较强&#10;灰色:近期成交=1，参考性不强&#10;红色:近期成交=0，参考性较弱">?</span></span>
-        <span class="sbc-drops">掉落</span>
-        <span class="sbc-select"></span>
-      `;
-      list.appendChild(hdr);
-    }
+  function sortArrow(key) {
+    if (state.sortKey !== key) return "";
+    return state.sortAsc ? " ▲" : " ▼";
+  }
 
+  function renderHeader(list) {
+    const hdr = document.createElement("div");
+    hdr.className = "sbc-game-row sbc-row-header";
+    hdr.innerHTML = `
+      <span class="sbc-appid sbc-sortable" data-sort="appid">游戏ID<span class="sbc-sort-arrow">${sortArrow("appid")}</span></span>
+      <span class="sbc-name sbc-sortable" data-sort="name">游戏名<span class="sbc-sort-arrow">${sortArrow("name")}</span></span>
+      <span class="sbc-level sbc-sortable" data-sort="level">等级<span class="sbc-sort-arrow">${sortArrow("level")}</span></span>
+      <span class="sbc-cards sbc-sortable" data-sort="cards">卡牌<span class="sbc-sort-arrow">${sortArrow("cards")}</span></span>
+      <span class="sbc-cost sbc-sortable" data-sort="cost">单套补全<span class="sbc-sort-arrow">${sortArrow("cost")}</span></span>
+      <span class="sbc-full sbc-sortable" data-sort="full">单套最低<span class="sbc-sort-arrow">${sortArrow("full")}</span></span>
+      <span class="sbc-lv5 sbc-sortable" data-sort="lv5">满级估算 <span class="sbc-sort-arrow">${sortArrow("lv5")}</span><span style="cursor:help;color:#8f98a0;font-size:11px;" title="绿色:近期成交>1，参考性较强&#10;灰色:近期成交=1，参考性不强&#10;红色:近期成交=0，参考性较弱">?</span></span>
+      <span class="sbc-drops sbc-sortable" data-sort="drops">掉落<span class="sbc-sort-arrow">${sortArrow("drops")}</span></span>
+      <span class="sbc-select"></span>
+    `;
+    hdr.querySelectorAll(".sbc-sortable").forEach(sp => {
+      sp.addEventListener("click", () => sortAndRender(sp.dataset.sort));
+    });
+    list.appendChild(hdr);
+  }
+
+  function sortAndRender(key) {
+    if (state.sortKey === key) {
+      state.sortAsc = !state.sortAsc;
+    } else {
+      state.sortKey = key;
+      state.sortAsc = true;
+    }
+    const list = document.getElementById("sbc-list");
+    list.innerHTML = "";
+    renderHeader(list);
+    const sorted = [...state.results].sort((a, b) => {
+      let va, vb;
+      switch (key) {
+        case "appid": va = +a.appid; vb = +b.appid; break;
+        case "name": va = a.gameName || ""; vb = b.gameName || ""; break;
+        case "level": va = a.level; vb = b.level; break;
+        case "cards": va = a.cards.reduce((s, c) => s + Math.min(c.owned, 1), 0);
+                      vb = b.cards.reduce((s, c) => s + Math.min(c.owned, 1), 0); break;
+        case "cost": va = a.cheapestSetCostCents; vb = b.cheapestSetCostCents; break;
+        case "full": va = a.fullSetCostCents; vb = b.fullSetCostCents; break;
+        case "lv5": va = a.level5CostCents; vb = b.level5CostCents; break;
+        case "drops": va = a.dropsRemaining; vb = b.dropsRemaining; break;
+        default: return 0;
+      }
+      if (typeof va === "string") {
+        const cmp = va.localeCompare(vb, "zh");
+        return state.sortAsc ? cmp : -cmp;
+      }
+      return state.sortAsc ? va - vb : vb - va;
+    });
+    sorted.forEach(info => renderDataRow(list, info));
+  }
+
+  function renderDataRow(list, info) {
     const row = document.createElement("div");
     row.className = "sbc-game-row";
     row.dataset.appid = info.appid;
@@ -1432,21 +1480,24 @@
       <span class="sbc-drops">${info.dropsRemaining}</span>
       <span class="sbc-select"><a href="javascript:void(0)" class="sbc-buy-link" data-appid="${info.appid}" style="text-decoration:underline;color:#66c0f4;cursor:pointer;">购买</a></span>
     `;
-
     const buyLink = row.querySelector(".sbc-buy-link");
     buyLink.addEventListener("click", (e) => {
       e.stopPropagation();
       openMultibuy(info);
     });
-
     row.addEventListener("click", (e) => {
       if (e.target.closest(".sbc-buy-link")) return;
       const pUrl = getProfileUrl();
       if (pUrl) window.open(`${pUrl}/gamecards/${info.appid}/`, "_blank");
     });
     row.style.cursor = "pointer";
-
     list.appendChild(row);
+  }
+
+  function renderGameRow(info) {
+    const list = document.getElementById("sbc-list");
+    if (list.children.length === 0) renderHeader(list);
+    renderDataRow(list, info);
   }
 
   function updateSummary() {
