@@ -109,6 +109,7 @@
       this.running = false;
       this.stopped = false;
       this._consecutive429 = 0;
+      this._429Warned = false;
       this._reqCount = 0;
     }
 
@@ -137,6 +138,10 @@
               this.queue.unshift(job);
               const pauseMs = this.batchPause;
               if (this.onStatus) this.onStatus(`限流冷却中 (第${this._consecutive429}次, ${(pauseMs/1000).toFixed(0)}s)`, true);
+              if (this._consecutive429 >= 5 && !this._429Warned && this.onLog) {
+                this._429Warned = true;
+                this.onLog("Steam 可能暂时限制了此 IP 访问价格 API，建议更换 IP 或等候几小时", "warn-ip");
+              }
               for (let tick = 0; tick < pauseMs / 500; tick++) {
                 await new Promise(r => setTimeout(r, 500));
                 if (this.stopped) break;
