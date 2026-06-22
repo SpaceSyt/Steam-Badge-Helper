@@ -2,7 +2,7 @@
 // @name         Steam Badge Helper
 // @name:zh-CN   Steam 徽章助手
 // @namespace    https://github.com/SpaceSyt/Steam-Badge-Helper
-// @version      1.1.1
+// @version      1.2.0
 // @description  Scan Steam badges, batch query card prices, estimate full set costs
 // @description:zh-CN 扫描 Steam 徽章，批量查询卡牌价格，估算全套成本
 // @author       SpaceSyt
@@ -35,10 +35,10 @@
   // ============================================================
   const DEFAULT_CONFIG = {
     threshold: 5,
-    scanInterval: 800,
-    requestInterval: 1200,
+    scanInterval: 0,
+    requestInterval: 450,
     batchSize: 20,
-    batchPause: 15000,
+    batchPause: 45000,
     includeDrops: false,
     maxBadgePages: 1,
     blacklist: "",
@@ -865,17 +865,18 @@
           <div style="color:#fff;font-weight:bold;font-size:16px;margin-bottom:4px;">价格扫描</div>
           <div style="border-bottom:1px solid #45556b;margin-bottom:12px;"></div>
           <div class="sbc-toolbar">
-            <label>请求间隔 ms <input id="sbc-req-interval" class="sbc-input" type="number" min="100" step="100" value="${state.cfg.requestInterval}" style="width:70px"></label>
-            <label>扫描间隔 ms <input id="sbc-scan-interval" class="sbc-input" type="number" min="200" step="100" value="${state.cfg.scanInterval}"></label>
+            <label>priceoverview请求间隔 ms <input id="sbc-req-interval" class="sbc-input" type="number" min="100" step="100" value="${state.cfg.requestInterval}" style="width:70px"></label>
+            <label>gamecard请求间隔 ms <input id="sbc-scan-interval" class="sbc-input" type="number" min="0" step="100" value="${state.cfg.scanInterval}"></label>
           </div>
           <div class="sbc-toolbar">
-            <label>每 <input id="sbc-batch-size" class="sbc-input" type="number" min="5" step="1" value="${state.cfg.batchSize}" style="width:55px"> 次快速price请求后暂停</label>
+            <label>每 <input id="sbc-batch-size" class="sbc-input" type="number" min="5" step="1" value="${state.cfg.batchSize}" style="width:55px"> 次priceoverview请求后暂停</label>
             <label><input id="sbc-batch-pause" class="sbc-input" type="number" min="500" step="500" value="${state.cfg.batchPause}" style="width:75px"> ms</label>
           </div>
+          <div style="color:#8f98a0;font-size:12px;margin-top:4px;">默认值为作者测试最优稳定配置 (450ms / 45s)。如遇 429 可调高 100ms / 5s</div>
         </div>
       </div>
       <div class="sbc-footer">
-        <span class="sbc-label">V1.1.1 · 默认货币：人民币(CNY)</span>
+        <span class="sbc-label">V1.2.0 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -891,12 +892,12 @@
       if (!el) return;
       el.addEventListener("change", () => {
         state.cfg.threshold = parseFloat(document.getElementById("sbc-threshold").value) || 0;
-        state.cfg.scanInterval = parseInt(document.getElementById("sbc-scan-interval").value, 10) || 800;
-        state.cfg.requestInterval = parseInt(document.getElementById("sbc-req-interval").value, 10) || 800;
+        state.cfg.scanInterval = parseInt(document.getElementById("sbc-scan-interval").value, 10) || 0;
+        state.cfg.requestInterval = parseInt(document.getElementById("sbc-req-interval").value, 10) || 450;
         state.cfg.maxBadgePages = parseInt(document.getElementById("sbc-max-pages").value, 10) || 5;
         state.cfg.includeDrops = document.getElementById("sbc-include-drops").checked;
         state.cfg.batchSize = parseInt(document.getElementById("sbc-batch-size").value, 10) || 18;
-        state.cfg.batchPause = parseInt(document.getElementById("sbc-batch-pause").value, 10) || 15000;
+        state.cfg.batchPause = parseInt(document.getElementById("sbc-batch-pause").value, 10) || 45000;
         state.cfg.buyMode = document.getElementById("sbc-buy-mode").value;
         state.cfg.buffer = parseFloat(document.getElementById("sbc-buffer").value) || 0;
         saveConfig(state.cfg);
