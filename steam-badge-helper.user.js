@@ -2,7 +2,7 @@
 // @name         Steam Badge Helper
 // @name:zh-CN   Steam 徽章助手
 // @namespace    https://github.com/SpaceSyt/Steam-Badge-Helper
-// @version      1.3.3
+// @version      1.3.7
 // @description  Scan Steam badges, batch query card prices, estimate full set costs
 // @description:zh-CN 扫描 Steam 徽章，批量查询卡牌价格，估算全套成本
 // @author       SpaceSyt
@@ -430,11 +430,19 @@
       const lowestCents = parsePrice(res?.data?.lowest_price);
       const medianCents = parsePrice(res?.data?.median_price);
       const sellCents = lowestCents || medianCents;
-      if (!sellCents) return null;
+      if (!sellCents) {
+        return res?.data?.success ? { noPriceData: true, volume: 0 } : null;
+      }
 
       const volume = parseInt(res?.data?.volume, 10) || 0;
 
-      return { lowestSellCents: sellCents, medianCents, volume, estimated: !lowestCents };
+      return {
+        lowestSellCents: sellCents,
+        medianCents,
+        volume,
+        estimated: !lowestCents,
+        priceSource: lowestCents ? "lowest" : "median",
+      };
     } catch (e) {
       return null;
     }
@@ -471,6 +479,27 @@
         knownTotalCents + (totalCards - sampleCount) * remainingAverage
       ),
     };
+  }
+
+  function geometricMeanCents(values) {
+    const usable = values.filter(value => Number.isFinite(value) && value > 0);
+    if (usable.length === 0) return null;
+    const meanLog = usable.reduce((sum, value) => sum + Math.log(value), 0) / usable.length;
+    return Math.round(Math.exp(meanLog));
+  }
+
+  function estimateMissingLevel5Cost(noPriceCards, cardPrices, setsTo5) {
+    const knownUnitPrices = cardPrices.map(price =>
+      Math.max(price.lowestCents, price.medianCents || 0)
+    );
+    const estimatedUnitCents = geometricMeanCents(knownUnitPrices);
+    if (estimatedUnitCents == null) return null;
+
+    const estimatedCostCents = noPriceCards.reduce((sum, card) => {
+      const need5 = Math.max(0, setsTo5 - card.owned);
+      return sum + estimatedUnitCents * need5;
+    }, 0);
+    return { estimatedUnitCents, estimatedCostCents };
   }
 
   // ============================================================
@@ -935,7 +964,7 @@
         </div>
       </div>
       <div class="sbc-footer">
-        <span class="sbc-label">V1.3.3 · 默认货币：人民币(CNY)</span>
+        <span class="sbc-label">V1.3.7 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -1349,6 +1378,8 @@
           const setsTo5 = Math.max(0, 5 - info.level);
           let allPriced = true;
           let thresholdSkip = false;
+          const noPriceCards = [];
+          let failedPriceCount = 0;
 
           for (const card of info.cards) {
             if (state.stopRequested || state.skipCurrent) break;
@@ -1361,20 +1392,34 @@
             const pk = await priceCard(card.marketHashName, queue);
             if (!pk) {
               log(`  ⚠ 卡牌 "${card.name}" (market: ${card.marketHashName}) 查价失败, 跳过此卡`, "warn");
+              failedPriceCount++;
+              info.hasEstimated = true;
+              continue;
+            }
+            if (pk.noPriceData) {
+              log(`  ⚠ 卡牌 "${card.name}" Steam 仅返回 success，无可用价格`, "warn");
+              card.priceSource = "none";
+              noPriceCards.push(card);
+              info.hasEstimated = true;
               continue;
             }
 
             card.lowestCents = pk.lowestSellCents;
             card.medianCents = pk.medianCents;
             card.volume = pk.volume;
+            card.priceSource = pk.priceSource;
             if (pk.volume < minVolume) minVolume = pk.volume;
-            if (pk.estimated) info.hasEstimated = true;
+            if (pk.estimated) {
+              info.hasEstimated = true;
+              info.hasMedianFallback = true;
+            }
             info.cardPrices.push({
               name: card.name,
               lowestCents: pk.lowestSellCents,
               medianCents: pk.medianCents,
               volume: pk.volume,
               marketHashName: card.marketHashName,
+              priceSource: pk.priceSource,
             });
 
             const need1 = Math.max(0, 1 - card.owned);
@@ -1423,6 +1468,36 @@
             skipped++;
             continue;
           }
+
+          if (info.cardPrices.length === 0) {
+            log(`  → Steam 未返回任何可用价格，无法估算，跳过`, "warn");
+            skipped++;
+            continue;
+          }
+
+          const noPriceRatio = noPriceCards.length / info.totalInSet;
+          if (noPriceCards.length > 0 && noPriceRatio >= 0.5) {
+            const formulaEstimate = estimateMissingLevel5Cost(
+              noPriceCards,
+              info.cardPrices,
+              setsTo5
+            );
+            if (formulaEstimate) {
+              level5CostCents += formulaEstimate.estimatedCostCents;
+              info.hasEstimated = true;
+              info.hasFormulaEstimate = true;
+              info.formulaEstimatedCards = noPriceCards.length;
+              info.formulaEstimateUnitCents = formulaEstimate.estimatedUnitCents;
+              log(
+                `  → ${noPriceCards.length}/${info.totalInSet}张无价格，` +
+                `按已知卡牌几何均价 ¥${formatCNY(formulaEstimate.estimatedUnitCents)} ` +
+                `补充满级估算 ¥${formatCNY(formulaEstimate.estimatedCostCents)}`,
+                "warn"
+              );
+            }
+          }
+          info.noPriceDataCount = noPriceCards.length;
+          info.failedPriceCount = failedPriceCount;
 
           info.cheapestSetCostCents = setCostCents;
           info.fullSetCostCents = fullSetCostCents;
@@ -1498,7 +1573,7 @@
       <span class="sbc-cards sbc-sortable" data-sort="cards">卡牌<span class="sbc-sort-arrow">${sortArrow("cards")}</span></span>
       <span class="sbc-cost sbc-sortable" data-sort="cost">单套补全<span class="sbc-sort-arrow">${sortArrow("cost")}</span></span>
       <span class="sbc-full sbc-sortable" data-sort="full">单套最低<span class="sbc-sort-arrow">${sortArrow("full")}</span></span>
-      <span class="sbc-lv5 sbc-sortable" data-sort="lv5">满级估算 <span class="sbc-sort-arrow">${sortArrow("lv5")}</span><span style="cursor:help;color:#8f98a0;font-size:11px;" title="绿色:近期成交>1，参考性较强&#10;灰色:近期成交=1，参考性不强&#10;红色:近期成交=0，参考性较弱">?</span></span>
+      <span class="sbc-lv5 sbc-sortable" data-sort="lv5">满级估算 <span class="sbc-sort-arrow">${sortArrow("lv5")}</span><span style="cursor:help;color:#8f98a0;font-size:11px;" title="绿色:近期成交>1，参考性较强&#10;灰色:近期成交=1，参考性不强&#10;红色:近期成交=0，参考性较弱&#10;黄色:Steam返回信息不全，采用 median_price 或公式估算，结果可能偏低">?</span></span>
       <span class="sbc-drops sbc-sortable" data-sort="drops">掉落<span class="sbc-sort-arrow">${sortArrow("drops")}</span></span>
       <span class="sbc-select"></span>
     `;
@@ -1549,7 +1624,29 @@
     const ownedCards = info.cards.reduce((sum, c) => sum + Math.min(c.owned, 1), 0);
     const minVol = info.minVolume || 0;
     const lv5Color = info.hasEstimated ? "color:#c9a02c" : minVol > 1 ? "color:#4caf50" : minVol === 1 ? "color:#888" : "";
-    const lv5Title = info.hasEstimated ? "Steam未返回完整价格，估算偏低" : minVol > 1 ? "近期成交>1，参考性较强" : minVol === 1 ? "近期成交=1，参考性不强" : "近期成交=0，参考性较弱";
+    const estimateNotes = [];
+    if (info.hasFormulaEstimate) {
+      estimateNotes.push(
+        `Steam返回信息不全：${info.formulaEstimatedCards}张卡牌无价格，` +
+        `使用已知卡牌几何均价 ¥${formatCNY(info.formulaEstimateUnitCents)} 估算`
+      );
+    }
+    if (info.hasMedianFallback) {
+      estimateNotes.push("部分卡牌无最低出售价格，使用 median_price 估算");
+    }
+    const unestimatedCards =
+      Math.max(0, (info.noPriceDataCount || 0) - (info.formulaEstimatedCards || 0)) +
+      (info.failedPriceCount || 0);
+    if (unestimatedCards > 0) {
+      estimateNotes.push(`${unestimatedCards}张卡牌未计入估算`);
+    }
+    const lv5Title = estimateNotes.length > 0
+      ? `${estimateNotes.join("\n")}，结果可能偏低`
+      : minVol > 1
+        ? "近期成交>1，参考性较强"
+        : minVol === 1
+          ? "近期成交=1，参考性不强"
+          : "近期成交=0，参考性较弱";
     row.appendChild(createTextSpan("sbc-appid", `${info.appid}${info.isFoil ? "(箔)" : ""}`));
     row.appendChild(createTextSpan("sbc-name", info.gameName || "(未知)"));
     row.appendChild(createTextSpan("sbc-level", `Lv${info.level}/5`));
@@ -1749,7 +1846,11 @@
       items: toBuy.map(q => q.card.marketHashName),
       cards: toBuy.map(q => ({
         marketHashName: q.card.marketHashName,
-        lowestCents: q.card.lowestCents || 0,
+        lowestCents: q.card.priceSource === "lowest"
+          && Number.isFinite(q.card.lowestCents)
+          && q.card.lowestCents > 0
+          ? q.card.lowestCents
+          : null,
         name: q.card.name,
         qty: q.qty,
       })),
@@ -1838,7 +1939,7 @@
           return;
         }
 
-        if (card.lowestCents != null) {
+        if (card.lowestCents > 0) {
           setMultibuyFieldValue(price, ((card.lowestCents + bufferCents) / 100).toFixed(2));
         }
         if (quantity) {
