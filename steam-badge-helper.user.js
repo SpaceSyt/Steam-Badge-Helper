@@ -434,7 +434,7 @@
 
       const volume = parseInt(res?.data?.volume, 10) || 0;
 
-      return { lowestSellCents: sellCents, medianCents, volume };
+      return { lowestSellCents: sellCents, medianCents, volume, estimated: !lowestCents };
     } catch (e) {
       return null;
     }
@@ -1368,6 +1368,7 @@
             card.medianCents = pk.medianCents;
             card.volume = pk.volume;
             if (pk.volume < minVolume) minVolume = pk.volume;
+            if (pk.estimated) info.hasEstimated = true;
             info.cardPrices.push({
               name: card.name,
               lowestCents: pk.lowestSellCents,
@@ -1546,7 +1547,9 @@
     row.dataset.appid = info.appid;
     row.dataset.foil = info.isFoil ? 1 : 0;
     const ownedCards = info.cards.reduce((sum, c) => sum + Math.min(c.owned, 1), 0);
-    const lv5Color = (info.minVolume || 0) > 1 ? "color:#4caf50" : (info.minVolume || 0) === 1 ? "color:#888" : "";
+    const minVol = info.minVolume || 0;
+    const lv5Color = info.hasEstimated ? "color:#c9a02c" : minVol > 1 ? "color:#4caf50" : minVol === 1 ? "color:#888" : "";
+    const lv5Title = info.hasEstimated ? "Steam未返回完整价格，估算偏低" : minVol > 1 ? "近期成交>1，参考性较强" : minVol === 1 ? "近期成交=1，参考性不强" : "近期成交=0，参考性较弱";
     row.appendChild(createTextSpan("sbc-appid", `${info.appid}${info.isFoil ? "(箔)" : ""}`));
     row.appendChild(createTextSpan("sbc-name", info.gameName || "(未知)"));
     row.appendChild(createTextSpan("sbc-level", `Lv${info.level}/5`));
@@ -1555,6 +1558,7 @@
     row.appendChild(createTextSpan("sbc-full", `¥${info.fullSetCNY}`));
     const lv5 = createTextSpan("sbc-lv5", `¥${info.level5CNY}`);
     lv5.style.cssText = lv5Color;
+    lv5.title = lv5Title;
     row.appendChild(lv5);
     row.appendChild(createTextSpan("sbc-drops", info.dropsRemaining));
 
