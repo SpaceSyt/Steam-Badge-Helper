@@ -2,7 +2,7 @@
 // @name         Steam Badge Helper
 // @name:zh-CN   Steam 徽章助手
 // @namespace    https://github.com/SpaceSyt/Steam-Badge-Helper
-// @version      1.2.3
+// @version      1.3.0
 // @description  Scan Steam badges, batch query card prices, estimate full set costs
 // @description:zh-CN 扫描 Steam 徽章，批量查询卡牌价格，估算全套成本
 // @author       SpaceSyt
@@ -900,7 +900,7 @@
         </div>
       </div>
       <div class="sbc-footer">
-        <span class="sbc-label">V1.2.3 · 默认货币：人民币(CNY)</span>
+        <span class="sbc-label">V1.3.0 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -1352,6 +1352,23 @@
               ? pk.lowestSellCents + (need5 - 1) * Math.max(pk.lowestSellCents, pk.medianCents)
               : 0;
 
+            // Predictive skip: after 2 cards, estimate if full set exceeds threshold
+            if (info.cardPrices.length === 2) {
+              const p0 = info.cardPrices[0];
+              const p1 = info.cardPrices[1];
+              const maxP = Math.max(p0.lowestCents, p1.lowestCents);
+              const minP = Math.min(p0.lowestCents, p1.lowestCents);
+              if (p0.volume > 0 && p1.volume > 0 && maxP / minP < 2) {
+                const predicted = Math.ceil(maxP * info.totalInSet * 1.15);
+                if (predicted > thresholdCents) {
+                  log(`  → 2张预测全套≈¥${formatCNY(predicted)} > ¥${cfg.threshold}，跳过 (max=¥${formatCNY(maxP)}, n=${info.totalInSet})`, "info");
+                  allPriced = false;
+                  thresholdSkip = true;
+                  break;
+                }
+              }
+            }
+
             if (fullSetCostCents > thresholdCents) {
               log(`  → 已查${info.cardPrices.length}/${info.totalInSet}张, 全套 ¥${formatCNY(fullSetCostCents)} > ¥${cfg.threshold}，跳过`, "info");
               allPriced = false;
@@ -1549,7 +1566,8 @@
   // Multibuy
   // ============================================================
   const MULTIBUY_DATA_KEY = "sbc_multibuy_data";
-  const MULTIBUY_DATA_TTL = 15000;
+  const MULTIBUY_DATA_TTL = 5 * 60 * 1000;
+  const MULTIBUY_FILL_TIMEOUT = 30000;
 
   function clearMultibuyData() {
     GM_setValue(MULTIBUY_DATA_KEY, null);
@@ -1562,6 +1580,91 @@
       case "buy5":      return 5;
       default:          return owned < 1 ? 1 : 0;
     }
+  }
+
+  function sameMarketItems(left, right) {
+    if (left.length !== right.length) return false;
+    const a = [...left].sort();
+    const b = [...right].sort();
+    return a.every((item, index) => item === b[index]);
+  }
+
+  function getMarketHashNameFromLink(link) {
+    const href = link?.getAttribute("href") || link?.href || "";
+    const match = href.match(/\/market\/listings\/753\/(.+?)(?:\?|#|$)/);
+    if (!match) return "";
+    try {
+      return decodeURIComponent(match[1]);
+    } catch (_) {
+      return match[1];
+    }
+  }
+
+  function getFieldContext(field) {
+    const attributes = [
+      field?.name,
+      field?.id,
+      field?.className,
+      field?.getAttribute?.("placeholder"),
+      field?.getAttribute?.("aria-label"),
+      field?.getAttribute?.("data-field"),
+    ];
+    return attributes.filter(Boolean).join(" ").toLowerCase();
+  }
+
+  function findMultibuyFields(row) {
+    const fields = [...row.querySelectorAll("input, select")].filter(field => {
+      const type = (field.type || "").toLowerCase();
+      return !field.disabled && !["hidden", "button", "submit", "checkbox", "radio"].includes(type);
+    });
+    const quantityPattern = /qty|quantity|count|数量/;
+    const pricePattern = /price|cost|currency|buyorder|金额|价格|单价/;
+    const quantity = fields.find(field => quantityPattern.test(getFieldContext(field))) || null;
+
+    const priceCandidates = fields.filter(
+      field => field !== quantity && (field.tagName || "").toUpperCase() !== "SELECT"
+    );
+    let price = priceCandidates.find(field => pricePattern.test(getFieldContext(field))) || null;
+    if (!price) {
+      const nestedPriceFields = [...row.querySelectorAll(
+        ".market_multibuy_price input, .market_commodity_buyorder_price input, [class*='price'] input"
+      )].filter(field => priceCandidates.includes(field));
+      if (nestedPriceFields.length === 1) price = nestedPriceFields[0];
+    }
+    if (!price && priceCandidates.length === 1) {
+      price = priceCandidates[0];
+    }
+
+    return { quantity, price };
+  }
+
+  function findMultibuyRow(link) {
+    const isSingleItemContainer = node => {
+      if (!node?.querySelector("input, select")) return false;
+      const listingCount = node.querySelectorAll?.('a[href*="/market/listings/753/"]').length || 0;
+      return listingCount <= 1;
+    };
+    const preferred = link.closest(
+      "tr, .market_multibuy_item, .multibuy_item_row, [class*='multibuy'][class*='item']"
+    );
+    if (isSingleItemContainer(preferred)) return preferred;
+
+    let node = link.parentElement;
+    for (let depth = 0; node && node !== document.body && depth < 8; depth++, node = node.parentElement) {
+      if (isSingleItemContainer(node)) return node;
+    }
+    return null;
+  }
+
+  function setMultibuyFieldValue(field, value) {
+    if (!field) return;
+    const nextValue = String(value);
+    if (field.value === nextValue) return;
+    field.value = nextValue;
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+    field.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "0" }));
+    field.dispatchEvent(new Event("blur", { bubbles: true }));
   }
 
   function openMultibuy(info) {
@@ -1578,9 +1681,16 @@
     const qtyByCard = [];
     cardsWithHash.forEach(c => {
       const qty = getMultibuyQuantity(mode, info.level, c.owned);
-      params.append("items[]", c.marketHashName);
-      params.append("qty[]", String(qty));
       qtyByCard.push({ card: c, qty });
+    });
+    const toBuy = qtyByCard.filter(q => q.qty > 0);
+    if (toBuy.length === 0) {
+      log(`${info.gameName}: 当前模式下无需购买卡牌`, "info");
+      return;
+    }
+    toBuy.forEach(q => {
+      params.append("items[]", q.card.marketHashName);
+      params.append("qty[]", String(q.qty));
     });
 
     const profileUrl = getProfileUrl();
@@ -1588,14 +1698,15 @@
       params.set("steamdb_return_to", `${profileUrl}/gamecards/${info.appid}/`);
     }
 
-    const bufferCents = Math.round((state.cfg.buffer || 0) * 100);
-    const toBuy = qtyByCard.filter(q => q.qty > 0);
+    const bufferInput = document.getElementById("sbc-buffer");
+    const bufferValue = bufferInput ? parseFloat(bufferInput.value) : state.cfg.buffer;
+    const bufferCents = Math.round((Number.isFinite(bufferValue) ? bufferValue : 0) * 100);
     const buyData = {
       appid: info.appid,
       gameName: info.gameName,
       bufferCents,
       createdAt: Date.now(),
-      items: cardsWithHash.map(c => c.marketHashName),
+      items: toBuy.map(q => q.card.marketHashName),
       cards: toBuy.map(q => ({
         marketHashName: q.card.marketHashName,
         lowestCents: q.card.lowestCents || 0,
@@ -1625,8 +1736,7 @@
 
     const currentItems = new URL(window.location.href).searchParams.getAll("items[]");
     const storedItems = Array.isArray(data?.items) ? data.items : [];
-    const sameItems = currentItems.length === storedItems.length
-      && currentItems.every((item, index) => item === storedItems[index]);
+    const sameItems = sameMarketItems(currentItems, storedItems);
     const isFresh = Number.isFinite(data?.createdAt)
       && Date.now() - data.createdAt <= MULTIBUY_DATA_TTL;
 
@@ -1651,11 +1761,18 @@
     };
     injectResetBtn();
 
+    const cardsByHash = new Map(data.cards.map(card => [card.marketHashName, card]));
+    const filledCards = new Set();
+    const warnedCards = new Set();
     let finished = false;
+    let completionTimer = null;
+    let deadlineTimer = null;
     let observer = null;
     const finish = () => {
       if (finished) return;
       finished = true;
+      if (completionTimer) clearTimeout(completionTimer);
+      if (deadlineTimer) clearTimeout(deadlineTimer);
       clearMultibuyData();
       observer?.disconnect();
     };
@@ -1663,54 +1780,37 @@
     const tryFill = () => {
       if (finished) return;
 
-      const items = document.querySelectorAll(".market_multibuy_item, tr[class*='multibuy'], tr .item_name");
-      if (items.length === 0) return;
-
-      const rows = [];
-      items.forEach(el => {
-        const row = el.closest("tr") || el.closest(".market_multibuy_item") || el.parentElement;
-        if (!row || rows.includes(row)) return;
-        rows.push(row);
-      });
-
-      let filled = 0;
-      rows.forEach(row => {
-        const listingLink = row.querySelector('a[href*="/market/listings/753/"]');
-        if (!listingLink) return;
-        const href = listingLink.getAttribute("href") || "";
-        const m = href.match(/\/market\/listings\/753\/(.+?)(\?|$)/);
-        if (!m) return;
-        let mhn;
-        try { mhn = decodeURIComponent(m[1]); } catch (_) { mhn = m[1]; }
-        const card = data.cards.find(c => c.marketHashName === mhn);
+      const listingLinks = document.querySelectorAll('a[href*="/market/listings/753/"]');
+      listingLinks.forEach(listingLink => {
+        const marketHashName = getMarketHashNameFromLink(listingLink);
+        const card = cardsByHash.get(marketHashName);
         if (!card) return;
 
-        const qtyInput = row.querySelector("input[name*='qty'], input[name*='quantity']");
-        const allInputs = row.querySelectorAll("input[type='text'], input[type='number']:not([name*='qty']):not([name*='quantity'])");
-        let priceInput = null;
-        for (const inp of allInputs) {
-          if (inp !== qtyInput && (!qtyInput || inp.closest("td") !== qtyInput.closest("td"))) {
-            priceInput = inp;
-            break;
+        const row = findMultibuyRow(listingLink);
+        if (!row) return;
+        const { quantity, price } = findMultibuyFields(row);
+        if (!price) {
+          if (!warnedCards.has(marketHashName)) {
+            warnedCards.add(marketHashName);
+            console.warn(`[SBC] Price input not found for ${marketHashName}`);
           }
+          return;
         }
-        if (!priceInput) return;
 
         if (card.lowestCents != null) {
-          priceInput.value = ((card.lowestCents + bufferCents) / 100).toFixed(2);
-          priceInput.dispatchEvent(new Event("input", { bubbles: true }));
-          priceInput.dispatchEvent(new Event("change", { bubbles: true }));
+          setMultibuyFieldValue(price, ((card.lowestCents + bufferCents) / 100).toFixed(2));
         }
-        if (qtyInput) {
-          qtyInput.value = String(card.qty || 1);
-          qtyInput.dispatchEvent(new Event("input", { bubbles: true }));
-          qtyInput.dispatchEvent(new Event("change", { bubbles: true }));
+        if (quantity) {
+          setMultibuyFieldValue(quantity, card.qty || 1);
         }
-        filled++;
+        filledCards.add(marketHashName);
       });
 
-      if (filled > 0) {
-        finish();
+      if (filledCards.size === data.cards.length && !completionTimer) {
+        completionTimer = setTimeout(() => {
+          tryFill();
+          finish();
+        }, 750);
       }
     };
 
@@ -1718,7 +1818,7 @@
     const poll = () => {
       tryFill();
       if (finished) return;
-      if (++pollCount >= 20) {
+      if (++pollCount >= MULTIBUY_FILL_TIMEOUT / 500) {
         finish();
         return;
       }
@@ -1730,7 +1830,7 @@
       if (!finished) tryFill();
     });
     observer.observe(document.body, { childList: true, subtree: true });
-    setTimeout(finish, MULTIBUY_DATA_TTL);
+    deadlineTimer = setTimeout(finish, MULTIBUY_FILL_TIMEOUT);
   }
 
   // ============================================================
