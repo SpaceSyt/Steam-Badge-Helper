@@ -1610,96 +1610,48 @@
     const tryFill = () => {
       if (fillAttempted) return;
 
-      const allInputs = document.querySelectorAll("input");
+      const items = document.querySelectorAll(".market_multibuy_item, tr[class*='multibuy'], tr .item_name");
+      if (items.length === 0) return;
 
-      const qtyInputs = [];
-      const priceInputs = [];
-      allInputs.forEach(inp => {
-        const name = (inp.getAttribute("name") || "").toLowerCase();
-        const cls = (inp.className || "").toLowerCase();
-        const placeholder = (inp.getAttribute("placeholder") || "").toLowerCase();
-        const t = (inp.type || "").toLowerCase();
-
-        if (name.includes("qty") || name.includes("quantity") || cls.includes("quantity") || placeholder.includes("quantity")) {
-          qtyInputs.push(inp);
-        } else if (name.includes("price") || cls.includes("price") || placeholder.includes("price") || t === "number") {
-          priceInputs.push(inp);
-        } else if (t === "text") {
-          const row = inp.closest("tr");
-          if (row) {
-            const textInputsInRow = row.querySelectorAll("input[type='text']");
-            if (textInputsInRow.length === 1 && textInputsInRow[0] === inp) {
-              qtyInputs.push(inp);
-            }
-          }
-        }
+      const rows = [];
+      items.forEach(el => {
+        const row = el.closest("tr") || el.closest(".market_multibuy_item") || el.parentElement;
+        if (!row || rows.includes(row)) return;
+        rows.push(row);
       });
-
-      const rows = new Map();
-      const getRowKey = (el) => {
-        const tr = el.closest("tr");
-        if (tr) return tr;
-        return el.closest(".market_multibuy_item") || el.closest(".multibuy_item_row") || el.parentElement;
-      };
-      const seenRows = new Set();
-      qtyInputs.forEach(inp => {
-        const row = getRowKey(inp);
-        if (!row) return;
-        if (!rows.has(row)) rows.set(row, { qty: null, price: null });
-        rows.get(row).qty = inp;
-        seenRows.add(row);
-      });
-      priceInputs.forEach(inp => {
-        const row = getRowKey(inp);
-        if (!row) return;
-        if (!rows.has(row)) rows.set(row, { qty: null, price: null });
-        rows.get(row).price = inp;
-        seenRows.add(row);
-      });
-      rows.forEach((fields, row) => {
-        if (!fields.price) {
-          const allInRow = row.querySelectorAll("input");
-          for (const inp of allInRow) {
-            if (inp !== fields.qty && (inp.type === "number" || inp.name.toLowerCase().includes("price") || inp.className.toLowerCase().includes("price"))) {
-              fields.price = inp;
-              break;
-            }
-          }
-          if (!fields.price) {
-            for (const inp of allInRow) {
-              if (inp !== fields.qty) { fields.price = inp; break; }
-            }
-          }
-        }
-      });
-
-      const entries = Array.from(rows.entries()).filter(([_, f]) => f.price);
 
       let filled = 0;
-      entries.forEach(([row, fields], idx) => {
-        const rowText = row.textContent.trim();
+      rows.forEach(row => {
+        const listingLink = row.querySelector('a[href*="/market/listings/753/"]');
+        if (!listingLink) return;
+        const href = listingLink.getAttribute("href") || "";
+        const m = href.match(/\/market\/listings\/753\/(.+?)(\?|$)/);
+        if (!m) return;
+        let mhn;
+        try { mhn = decodeURIComponent(m[1]); } catch (_) { mhn = m[1]; }
+        const card = data.cards.find(c => c.marketHashName === mhn);
+        if (!card) return;
 
-        let card = null;
-        for (const c of data.cards) {
-          const terms = [c.name, c.marketHashName].filter(Boolean).map(t => decodeURIComponent(t));
-          if (terms.some(t => t && rowText.indexOf(t) >= 0)) {
-            card = c;
+        const qtyInput = row.querySelector("input[name*='qty'], input[name*='quantity']");
+        const allInputs = row.querySelectorAll("input[type='text'], input[type='number']:not([name*='qty']):not([name*='quantity'])");
+        let priceInput = null;
+        for (const inp of allInputs) {
+          if (inp !== qtyInput && (!qtyInput || inp.closest("td") !== qtyInput.closest("td"))) {
+            priceInput = inp;
             break;
           }
         }
-        if (!card && idx < data.cards.length) card = data.cards[idx];
-        if (!card) return;
+        if (!priceInput) return;
 
-        if (card.lowestCents != null && fields.price) {
-          const p = ((card.lowestCents + bufferCents) / 100).toFixed(2);
-          fields.price.value = p;
-          fields.price.dispatchEvent(new Event("input", { bubbles: true }));
-          fields.price.dispatchEvent(new Event("change", { bubbles: true }));
+        if (card.lowestCents != null) {
+          priceInput.value = ((card.lowestCents + bufferCents) / 100).toFixed(2);
+          priceInput.dispatchEvent(new Event("input", { bubbles: true }));
+          priceInput.dispatchEvent(new Event("change", { bubbles: true }));
         }
-        if (fields.qty) {
-          fields.qty.value = String(card.qty || 1);
-          fields.qty.dispatchEvent(new Event("input", { bubbles: true }));
-          fields.qty.dispatchEvent(new Event("change", { bubbles: true }));
+        if (qtyInput) {
+          qtyInput.value = String(card.qty || 1);
+          qtyInput.dispatchEvent(new Event("input", { bubbles: true }));
+          qtyInput.dispatchEvent(new Event("change", { bubbles: true }));
         }
         filled++;
       });
