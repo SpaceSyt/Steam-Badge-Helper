@@ -2,7 +2,7 @@
 // @name         Steam Badge Helper
 // @name:zh-CN   Steam 徽章助手
 // @namespace    https://github.com/SpaceSyt/Steam-Badge-Helper
-// @version      1.3.0
+// @version      1.3.2
 // @description  Scan Steam badges, batch query card prices, estimate full set costs
 // @description:zh-CN 扫描 Steam 徽章，批量查询卡牌价格，估算全套成本
 // @author       SpaceSyt
@@ -50,7 +50,8 @@
     autoBlackThreshold: 10,
     autoBlackEnabled: false,
     buyMode: "complete5",
-    buffer: 0.10,
+    buffer: 0,
+    earlyPricePrediction: true,
   };
 
   // ============================================================
@@ -440,6 +441,39 @@
     } catch (e) {
       return null;
     }
+  }
+
+  const EARLY_PREDICTION_MARGIN = 1.05;
+  const EARLY_PREDICTION_STAGES = {
+    2: { factor: 0.78, highWeight: 0.20 },
+    3: { factor: 0.80, highWeight: 0.30 },
+    4: { factor: 0.84, highWeight: 0.25 },
+  };
+
+  function predictFullSetLowerBound(cardPrices, totalCards, knownTotalCents) {
+    const sampleCount = cardPrices.length;
+    const stage = EARLY_PREDICTION_STAGES[sampleCount];
+    if (!stage || totalCards <= sampleCount) return null;
+
+    const prices = cardPrices.map(card => card.lowestCents);
+    if (cardPrices.some(card => card.volume <= 0) || prices.some(price => !Number.isFinite(price) || price <= 0)) {
+      return null;
+    }
+
+    const minPrice = Math.min(...prices);
+    const maxPrice = Math.max(...prices);
+    if (maxPrice / minPrice >= 2) return null;
+
+    const representativePrice = minPrice + stage.highWeight * (maxPrice - minPrice);
+    const remainingAverage = representativePrice * stage.factor;
+    return {
+      sampleCount,
+      minPrice,
+      maxPrice,
+      predictedCents: Math.ceil(
+        knownTotalCents + (totalCards - sampleCount) * remainingAverage
+      ),
+    };
   }
 
   // ============================================================
@@ -896,11 +930,15 @@
             <label>每 <input id="sbc-batch-size" class="sbc-input" type="number" min="5" step="1" value="${state.cfg.batchSize}" style="width:55px"> 次priceoverview请求后暂停</label>
             <label><input id="sbc-batch-pause" class="sbc-input" type="number" min="500" step="500" value="${state.cfg.batchPause}" style="width:75px"> ms</label>
           </div>
+          <div class="sbc-toolbar">
+            <label><input id="sbc-early-price-prediction" type="checkbox" ${state.cfg.earlyPricePrediction ? "checked" : ""}> 价格预测提早跳过</label>
+            <span style="color:#8f98a0;font-size:12px;">扫描部分卡牌后保守预测全套价格，超过上限时提前跳过</span>
+          </div>
           <div style="color:#8f98a0;font-size:12px;margin-top:4px;">默认值为作者测试最优稳定配置 (450ms / 45s)。如遇 429 可调高 100ms / 5s</div>
         </div>
       </div>
       <div class="sbc-footer">
-        <span class="sbc-label">V1.3.0 · 默认货币：人民币(CNY)</span>
+        <span class="sbc-label">V1.3.2 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -910,7 +948,8 @@
 
     const cfgIds = ["sbc-threshold", "sbc-scan-interval",
       "sbc-req-interval", "sbc-max-pages", "sbc-include-drops",
-      "sbc-batch-size", "sbc-batch-pause", "sbc-buy-mode", "sbc-buffer"];
+      "sbc-batch-size", "sbc-batch-pause", "sbc-buy-mode", "sbc-buffer",
+      "sbc-early-price-prediction"];
     cfgIds.forEach(id => {
       const el = document.getElementById(id);
       if (!el) return;
@@ -924,6 +963,7 @@
         state.cfg.batchPause = parseInt(document.getElementById("sbc-batch-pause").value, 10) || 45000;
         state.cfg.buyMode = document.getElementById("sbc-buy-mode").value;
         state.cfg.buffer = parseFloat(document.getElementById("sbc-buffer").value) || 0;
+        state.cfg.earlyPricePrediction = document.getElementById("sbc-early-price-prediction").checked;
         saveConfig(state.cfg);
       });
     });
@@ -1352,27 +1392,32 @@
               ? pk.lowestSellCents + (need5 - 1) * Math.max(pk.lowestSellCents, pk.medianCents)
               : 0;
 
-            // Predictive skip: after 2 cards, conservative estimate via min price
-            if (info.cardPrices.length === 2) {
-              const p0 = info.cardPrices[0];
-              const p1 = info.cardPrices[1];
-              const minP = Math.min(p0.lowestCents, p1.lowestCents);
-              if (p0.volume > 0 && p1.volume > 0 && minP > 0) {
-                const predicted = Math.ceil(minP * info.totalInSet * 0.85);
-                if (predicted > thresholdCents) {
-                  log(`  → 2张保守预测全套≥¥${formatCNY(predicted)} > ¥${cfg.threshold}，跳过 (min=¥${formatCNY(minP)}, n=${info.totalInSet})`, "info");
-                  allPriced = false;
-                  thresholdSkip = true;
-                  break;
-                }
-              }
-            }
-
             if (fullSetCostCents > thresholdCents) {
               log(`  → 已查${info.cardPrices.length}/${info.totalInSet}张, 全套 ¥${formatCNY(fullSetCostCents)} > ¥${cfg.threshold}，跳过`, "info");
               allPriced = false;
               thresholdSkip = true;
               break;
+            }
+
+            if (cfg.earlyPricePrediction) {
+              const prediction = predictFullSetLowerBound(
+                info.cardPrices,
+                info.totalInSet,
+                fullSetCostCents
+              );
+              const predictionLimit = Math.ceil(thresholdCents * EARLY_PREDICTION_MARGIN);
+              if (prediction && prediction.predictedCents > predictionLimit) {
+                log(
+                  `  → 已查${prediction.sampleCount}/${info.totalInSet}张, ` +
+                  `保守预测全套≥¥${formatCNY(prediction.predictedCents)} > ` +
+                  `安全线¥${formatCNY(predictionLimit)}，提前跳过 ` +
+                  `(样本¥${formatCNY(prediction.minPrice)}-${formatCNY(prediction.maxPrice)})`,
+                  "info"
+                );
+                allPriced = false;
+                thresholdSkip = true;
+                break;
+              }
             }
           }
 
