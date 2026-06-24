@@ -2,7 +2,7 @@
 // @name         Steam Badge Helper
 // @name:zh-CN   Steam 徽章助手
 // @namespace    https://github.com/SpaceSyt/Steam-Badge-Helper
-// @version      1.3.7
+// @version      1.3.8
 // @description  Scan Steam badges, batch query card prices, estimate full set costs
 // @description:zh-CN 扫描 Steam 徽章，批量查询卡牌价格，估算全套成本
 // @author       SpaceSyt
@@ -964,7 +964,7 @@
         </div>
       </div>
       <div class="sbc-footer">
-        <span class="sbc-label">V1.3.7 · 默认货币：人民币(CNY)</span>
+        <span class="sbc-label">V1.3.8 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -1726,6 +1726,22 @@
     return a.every((item, index) => item === b[index]);
   }
 
+  function getMultibuyItemsFromUrl(url) {
+    const params = new URL(url).searchParams;
+    const repeatedItems = params.getAll("items[]");
+    if (repeatedItems.length > 0) return repeatedItems;
+
+    const indexedItems = [];
+    for (const [key, value] of params.entries()) {
+      const match = key.match(/^items\[(\d+)\]$/);
+      if (match) {
+        indexedItems.push({ index: Number(match[1]), value });
+      }
+    }
+    indexedItems.sort((a, b) => a.index - b.index);
+    return indexedItems.map(item => item.value);
+  }
+
   function getMarketHashNameFromLink(link) {
     const href = link?.getAttribute("href") || link?.href || "";
     const match = href.match(/\/market\/listings\/753\/(.+?)(?:\?|#|$)/);
@@ -1750,6 +1766,16 @@
   }
 
   function findMultibuyFields(row) {
+    const steamQuantity = row.querySelector(
+      "input.market_multi_quantity, input[name$='_qty'], input[id$='_qty']"
+    );
+    const steamPrice = row.querySelector(
+      "input.market_multi_price, input[name$='_price'], input[id$='_price']"
+    );
+    if (steamQuantity || steamPrice) {
+      return { quantity: steamQuantity, price: steamPrice };
+    }
+
     const fields = [...row.querySelectorAll("input, select")].filter(field => {
       const type = (field.type || "").toLowerCase();
       return !field.disabled && !["hidden", "button", "submit", "checkbox", "radio"].includes(type);
@@ -1794,14 +1820,15 @@
   }
 
   function setMultibuyFieldValue(field, value) {
-    if (!field) return;
+    if (!field) return false;
     const nextValue = String(value);
-    if (field.value === nextValue) return;
+    if (field.value === nextValue) return false;
     field.value = nextValue;
     field.dispatchEvent(new Event("input", { bubbles: true }));
     field.dispatchEvent(new Event("change", { bubbles: true }));
     field.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "0" }));
-    field.dispatchEvent(new Event("blur", { bubbles: true }));
+    $J(field).trigger("blur");
+    return true;
   }
 
   function openMultibuy(info) {
@@ -1875,13 +1902,18 @@
       return;
     }
 
-    const currentItems = new URL(window.location.href).searchParams.getAll("items[]");
+    const currentItems = getMultibuyItemsFromUrl(window.location.href);
     const storedItems = Array.isArray(data?.items) ? data.items : [];
     const sameItems = sameMarketItems(currentItems, storedItems);
     const isFresh = Number.isFinite(data?.createdAt)
       && Date.now() - data.createdAt <= MULTIBUY_DATA_TTL;
 
     if (!data || !Array.isArray(data.cards) || data.cards.length === 0 || !sameItems || !isFresh) {
+      console.warn("[SBC] Ignoring stale or mismatched multibuy data", {
+        currentItems,
+        storedItems,
+        isFresh,
+      });
       clearMultibuyData();
       return;
     }
@@ -1921,6 +1953,7 @@
     const tryFill = () => {
       if (finished) return;
 
+      let changed = false;
       const listingLinks = document.querySelectorAll('a[href*="/market/listings/753/"]');
       listingLinks.forEach(listingLink => {
         const marketHashName = getMarketHashNameFromLink(listingLink);
@@ -1940,13 +1973,20 @@
         }
 
         if (card.lowestCents > 0) {
-          setMultibuyFieldValue(price, ((card.lowestCents + bufferCents) / 100).toFixed(2));
+          changed = setMultibuyFieldValue(
+            price,
+            ((card.lowestCents + bufferCents) / 100).toFixed(2)
+          ) || changed;
         }
         if (quantity) {
-          setMultibuyFieldValue(quantity, card.qty || 1);
+          changed = setMultibuyFieldValue(quantity, card.qty || 1) || changed;
         }
         filledCards.add(marketHashName);
       });
+
+      if (changed && typeof unsafeWindow.UpdateOrderTotal === "function") {
+        unsafeWindow.UpdateOrderTotal();
+      }
 
       if (filledCards.size === data.cards.length && !completionTimer) {
         completionTimer = setTimeout(() => {
@@ -2227,15 +2267,18 @@
   // Init
   // ============================================================
   const pageUrl = window.location.href;
+  const initWhenReady = callback => {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", callback, { once: true });
+    } else {
+      callback();
+    }
+  };
 
   if (pageUrl.includes("/market/multibuy")) {
-    window.addEventListener("load", () => {
-      initMultibuyAutoFill();
-    });
+    initWhenReady(initMultibuyAutoFill);
   } else {
-    window.addEventListener("load", () => {
-      injectEntryBtn();
-    });
+    initWhenReady(injectEntryBtn);
   }
 
 })();
