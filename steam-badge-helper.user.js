@@ -2,7 +2,7 @@
 // @name         Steam Badge Helper
 // @name:zh-CN   Steam 徽章助手
 // @namespace    https://github.com/SpaceSyt/Steam-Badge-Helper
-// @version      1.4.0
+// @version      1.4.1
 // @description  Scan Steam badges, batch query card prices, estimate full set costs
 // @description:zh-CN 扫描 Steam 徽章，批量查询卡牌价格，估算全套成本
 // @author       SpaceSyt
@@ -706,38 +706,43 @@
       font-size: 12px;
       text-align: center;
     }
-    .sbc-game-row .sbc-select {
-      width: 82px;
+    .sbc-game-row .sbc-buy {
+      width: 60px;
+      flex-shrink: 0;
+      text-align: center;
+    }
+    .sbc-game-row .sbc-check {
+      width: 24px;
       flex-shrink: 0;
       text-align: center;
     }
     .sbc-game-list:not(.sbc-show-drops) .sbc-drops { display: none; }
-    .sbc-buy-actions {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      white-space: nowrap;
-    }
     .sbc-result-cb {
       margin: 0;
       cursor: pointer;
       accent-color: #75b022;
     }
-    .sbc-result-toolbar {
+    .sbc-scan-actions {
       display: flex;
       align-items: center;
       gap: 10px;
       margin-bottom: 8px;
-      min-height: 34px;
     }
-    .sbc-result-toolbar .sbc-btn {
-      padding: 6px 12px;
-      font-size: 13px;
+    .sbc-bulk-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-left: auto;
     }
     .sbc-selected-count {
       color: #8f98a0;
-      min-width: 76px;
+      margin-left: auto;
+      width: 24px;
+      margin-right: 14px;
+      flex-shrink: 0;
+      display: flex;
+      justify-content: center;
+      white-space: nowrap;
     }
     .sbc-help {
       cursor: help;
@@ -870,7 +875,11 @@
       font-size: 14px;
       color: #8f98a0;
       margin: 8px 0;
+      display: flex;
+      align-items: center;
+      gap: 12px;
     }
+    .sbc-summary-text { min-width: 0; }
     .sbc-summary b { color: #fff; }
 
     #sbc-order-dialog-backdrop {
@@ -1028,21 +1037,23 @@
             </label>
             <label class="sbc-primary-label">买价调整 ¥ <input id="sbc-price-adjustment" class="sbc-input" type="number" step="0.01" value="${state.cfg.priceAdjustment}" style="width:68px"></label>
           </div>
-          <div style="display:flex; gap:10px; margin-bottom:8px;">
+          <div class="sbc-scan-actions">
             <div class="sbc-btn" id="sbc-scan-btn">开始扫描</div>
             <div class="sbc-btn alt disabled" id="sbc-stop-btn">停止</div>
             <div class="sbc-btn alt disabled" id="sbc-skip-btn" title="跳过当前徽章">跳过当前</div>
-          </div>
-          <div class="sbc-result-toolbar">
-            <span class="sbc-selected-count" id="sbc-selected-count">已选择 0 项</span>
-            <div class="sbc-btn alt disabled" id="sbc-recalculate-btn">重新计算</div>
-            <div class="sbc-btn disabled" id="sbc-submit-orders-btn">提交订购单</div>
+            <div class="sbc-bulk-actions">
+              <div class="sbc-btn alt disabled" id="sbc-recalculate-btn">重新计算</div>
+              <div class="sbc-btn disabled" id="sbc-submit-orders-btn">提交订购单</div>
+            </div>
           </div>
           <div class="sbc-progress" id="sbc-progress-wrap" style="display:none">
             <div class="sbc-progress-bar" id="sbc-progress-bar" style="width:0"></div>
             <div class="sbc-progress-text" id="sbc-progress-text">0/0</div>
           </div>
-          <div class="sbc-summary" id="sbc-summary"></div>
+          <div class="sbc-summary">
+            <span class="sbc-summary-text" id="sbc-summary"></span>
+            <span class="sbc-selected-count" id="sbc-selected-count">已选择 0 项</span>
+          </div>
           <div class="sbc-status-text" id="sbc-status"></div>
           <div class="sbc-game-list" id="sbc-list"></div>
           <div id="sbc-log"></div>
@@ -1090,7 +1101,7 @@
         </div>
       </div>
       <div class="sbc-footer">
-        <span class="sbc-label">V1.4.0 · 默认货币：人民币(CNY)</span>
+        <span class="sbc-label">V1.4.1 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -1925,12 +1936,8 @@
       <span class="sbc-full sbc-sortable" data-sort="full">单套最低<span class="sbc-sort-arrow">${sortArrow("full")}</span></span>
       <span class="sbc-lv5 sbc-sortable" data-sort="lv5">满级估算 <span class="sbc-sort-arrow">${sortArrow("lv5")}</span><span style="cursor:help;color:#8f98a0;font-size:11px;" title="绿色:近期成交>1，参考性较强&#10;灰色:近期成交=1，参考性不强&#10;红色:近期成交=0，参考性较弱&#10;黄色:Steam返回信息不全，采用 median_price 或公式估算，结果可能偏低">?</span></span>
       <span class="sbc-drops sbc-sortable" data-sort="drops">掉落<span class="sbc-sort-arrow">${sortArrow("drops")}</span></span>
-      <span class="sbc-select">
-        <span class="sbc-buy-actions">
-          <span>手动购买</span>
-          <input id="sbc-result-select-all" class="sbc-result-cb" type="checkbox" title="全选">
-        </span>
-      </span>
+      <span class="sbc-buy">手动购买</span>
+      <span class="sbc-check"><input id="sbc-result-select-all" class="sbc-result-cb" type="checkbox" title="全选"></span>
     `;
     hdr.querySelectorAll(".sbc-sortable").forEach(sp => {
       sp.addEventListener("click", () => sortAndRender(sp.dataset.sort));
@@ -2042,9 +2049,7 @@
     row.appendChild(createTextSpan("sbc-drops", info.dropsRemaining));
 
     const buyCell = document.createElement("span");
-    buyCell.className = "sbc-select";
-    const buyActions = document.createElement("span");
-    buyActions.className = "sbc-buy-actions";
+    buyCell.className = "sbc-buy";
     const buyLink = document.createElement("a");
     buyLink.href = "javascript:void(0)";
     buyLink.className = "sbc-buy-link";
@@ -2056,10 +2061,12 @@
     checkbox.className = "sbc-result-cb";
     checkbox.checked = state.selectedResults.has(getResultKey(info));
     checkbox.title = "选择此游戏进行重新计算或提交订购单";
-    buyActions.appendChild(buyLink);
-    buyActions.appendChild(checkbox);
-    buyCell.appendChild(buyActions);
+    buyCell.appendChild(buyLink);
     row.appendChild(buyCell);
+    const checkboxCell = document.createElement("span");
+    checkboxCell.className = "sbc-check";
+    checkboxCell.appendChild(checkbox);
+    row.appendChild(checkboxCell);
 
     buyLink.addEventListener("click", (e) => {
       e.stopPropagation();
