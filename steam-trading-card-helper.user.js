@@ -3,13 +3,13 @@
 // @name:zh-CN   Steam 卡牌助手
 // @namespace    https://github.com/SpaceSyt/Steam-Trading-Card-Helper
 // @version      1.5.0
-// @description  Scan Steam trading cards, estimate badge costs, and streamline purchases
-// @description:zh-CN 扫描 Steam 卡牌价格、估算徽章成本并辅助批量购买
+// @description  Scan card prices, estimate badge costs, streamline purchases, and craft badges in bulk
+// @description:zh-CN 扫描卡牌价格、估算徽章成本、辅助批量购买并自动合成徽章
 // @author       SpaceSyt
 // @homepageURL  https://github.com/SpaceSyt/Steam-Trading-Card-Helper
 // @supportURL   https://github.com/SpaceSyt/Steam-Trading-Card-Helper/issues
-// @downloadURL  https://raw.githubusercontent.com/SpaceSyt/Steam-Trading-Card-Helper/refs/heads/SpaceSyt/v2.0-development/steam-trading-card-helper.user.js
-// @updateURL    https://raw.githubusercontent.com/SpaceSyt/Steam-Trading-Card-Helper/refs/heads/SpaceSyt/v2.0-development/steam-trading-card-helper.user.js
+// @downloadURL  https://raw.githubusercontent.com/SpaceSyt/Steam-Trading-Card-Helper/master/steam-trading-card-helper.user.js
+// @updateURL    https://raw.githubusercontent.com/SpaceSyt/Steam-Trading-Card-Helper/master/steam-trading-card-helper.user.js
 // @match        *://steamcommunity.com/*/badges*
 // @match        *://steamcommunity.com/id/*/badges*
 // @match        *://steamcommunity.com/profiles/*/badges*
@@ -1209,7 +1209,7 @@
         <div class="stch-tab-content active" id="stch-tab-scan">
           <div class="stch-onboarding" id="stch-onboarding" style="display:none">
             <h3>欢迎使用 Steam 卡牌助手</h3>
-            <p class="stch-onboarding-intro">扫描未完成的徽章，比较卡牌成本，并更快地完成购买。</p>
+            <p class="stch-onboarding-intro">扫描未完成的徽章，比较卡牌成本，更快地完成购买和徽章合成。</p>
             <div class="stch-onboarding-step">
               <b>1. 设置并扫描</b>
               设置单套价格上限和购买逻辑后开始扫描。价格预测会在明显超出上限时提前跳过，减少请求和等待。
@@ -1222,8 +1222,12 @@
               <b>3. 理解购买价格</b>
               在售最低通常更快成交，平均价格用于参考，求购最高通常需要等待卖家成交。买价调整可正可负。
             </div>
+            <div class="stch-onboarding-step">
+              <b>4. 批量合成徽章</b>
+              在“徽章合成”页扫描已经收集齐全的卡组，可逐级升级或使用 Steam 原生的一次升满。
+            </div>
             <div class="stch-onboarding-note">
-              市场价格和满级成本均可能变化。提交前请检查数量、单价和总金额；长期订购单会保留到成交或手动取消。
+              市场价格和满级成本均可能变化。提交购买、订购单或合成前，请检查数量和目标等级。
             </div>
             <div class="stch-onboarding-actions">
               <div class="stch-btn" id="stch-onboarding-close">关闭</div>
@@ -1808,6 +1812,10 @@
       "disabled",
       !hasPlan || craftBusy || otherBusy
     );
+    const craftMode = document.getElementById("stch-craft-mode");
+    const craftMaxPages = document.getElementById("stch-craft-max-pages");
+    if (craftMode) craftMode.disabled = craftBusy || otherBusy;
+    if (craftMaxPages) craftMaxPages.disabled = craftBusy || otherBusy;
   }
 
   function renderCraftResults() {
@@ -2142,10 +2150,10 @@
     }
   }
 
-  function showCraftConfirmation(plan) {
+  function showCraftConfirmation(plan, craftMode) {
     return new Promise(resolve => {
       const totalLevels = plan.reduce((sum, item) => sum + item.count, 0);
-      const craftModeLabel = state.cfg.craftMode === "max"
+      const craftModeLabel = craftMode === "max"
         ? "一次升满"
         : "逐级升级";
       const backdrop = document.createElement("div");
@@ -2160,7 +2168,7 @@
           </div>
           <div class="stch-order-list"></div>
           <div class="stch-order-note">
-            ${state.cfg.craftMode === "max"
+            ${craftMode === "max"
               ? "每个徽章会按所选次数提交一次合成请求。"
               : "每一级都会独立提交一次合成请求。"}
             若请求结果不确定，脚本会立即停止且不会自动重试，请重新扫描后再继续。
@@ -2219,6 +2227,8 @@
       sessionid: sessionId,
     });
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
     let response;
     try {
       response = await window.fetch(`${profileUrl}/ajaxcraftbadge/`, {
@@ -2229,9 +2239,14 @@
           "X-Requested-With": "XMLHttpRequest",
         },
         body: body.toString(),
+        signal: controller.signal,
       });
     } catch (cause) {
-      const error = new Error(`网络错误: ${cause?.message || cause}`);
+      clearTimeout(timeoutId);
+      const message = cause?.name === "AbortError"
+        ? "请求超时"
+        : `网络错误: ${cause?.message || cause}`;
+      const error = new Error(message);
       error.uncertain = true;
       throw error;
     }
@@ -2243,6 +2258,8 @@
       const error = new Error(`响应读取失败: ${cause?.message || cause}`);
       error.uncertain = true;
       throw error;
+    } finally {
+      clearTimeout(timeoutId);
     }
 
     let data = null;
@@ -2250,6 +2267,7 @@
       data = JSON.parse(text);
     } catch (_) {
       const error = new Error(`Steam 返回了无法识别的响应 (${response.status})`);
+      error.status = response.status;
       error.uncertain = response.ok || response.status >= 500;
       throw error;
     }
@@ -2276,7 +2294,8 @@
 
     const plan = getCraftPlan();
     if (plan.length === 0) return;
-    const confirmed = await showCraftConfirmation(plan);
+    const craftMode = state.cfg.craftMode === "max" ? "max" : "step";
+    const confirmed = await showCraftConfirmation(plan, craftMode);
     if (!confirmed) return;
 
     state.craftActionRunning = true;
@@ -2301,7 +2320,7 @@
 
         while (itemCompleted < item.count) {
           if (state.craftStopRequested) break;
-          const requestLevels = state.cfg.craftMode === "max"
+          const requestLevels = craftMode === "max"
             ? item.count - itemCompleted
             : 1;
           setCraftStatus(

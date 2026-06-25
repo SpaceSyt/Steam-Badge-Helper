@@ -1,6 +1,6 @@
 # Steam Trading Card Helper
 
-Steam 卡牌助手是一款 Tampermonkey 用户脚本，用于扫描未完成的 Steam 徽章、批量查询卡牌价格、估算升级成本，并辅助完成 multibuy 或长期订购单购买。
+Steam 卡牌助手是一款 Tampermonkey 用户脚本，用于扫描未完成的 Steam 徽章、批量查询卡牌价格、估算升级成本、辅助购买，并自动合成已经收集齐全的徽章。
 
 > **v1.5.0**：新增批量徽章合成，支持逐级升级和一次升满。
 
@@ -25,7 +25,7 @@ Steam 卡牌助手是一款 Tampermonkey 用户脚本，用于扫描未完成的
 1. 安装 [Tampermonkey](https://www.tampermonkey.net/)。
 2. 打开脚本安装链接：
 
-   <https://raw.githubusercontent.com/SpaceSyt/Steam-Trading-Card-Helper/refs/heads/SpaceSyt/v2.0-development/steam-trading-card-helper.user.js>
+   <https://raw.githubusercontent.com/SpaceSyt/Steam-Trading-Card-Helper/master/steam-trading-card-helper.user.js>
 
 3. 打开任意 Steam 徽章页，例如 `steamcommunity.com/id/xxx/badges/`。
 4. 点击页面中的 **Steam Trading Card Helper** 按钮。
@@ -101,7 +101,7 @@ Steam 卡牌助手是一款 Tampermonkey 用户脚本，用于扫描未完成的
 
 本脚本不是 Valve 或 Steam 的官方产品，与 Valve 无隶属或授权关系。
 
-市场价格、成交量和估算结果可能延迟、不完整或发生变化。自动填写和订购单功能仅用于辅助操作，提交前请自行检查卡牌、数量、单价和总金额。使用者应自行承担交易、账户限制、市场波动和脚本使用产生的风险。
+市场价格、成交量和估算结果可能延迟、不完整或发生变化。自动填写、订购单和徽章合成功能仅用于辅助操作，提交前请自行检查卡牌、数量、单价、总金额和目标等级。使用者应自行承担交易、卡牌消耗、账户限制、市场波动和脚本使用产生的风险。
 
 ## License
 
