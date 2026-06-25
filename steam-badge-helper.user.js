@@ -2,7 +2,7 @@
 // @name         Steam Badge Helper
 // @name:zh-CN   Steam 徽章助手
 // @namespace    https://github.com/SpaceSyt/Steam-Badge-Helper
-// @version      1.3.9-rc.1
+// @version      1.4.2-rc.1
 // @description  Scan Steam badges, batch query card prices, estimate full set costs
 // @description:zh-CN 扫描 Steam 徽章，批量查询卡牌价格，估算全套成本
 // @author       SpaceSyt
@@ -34,7 +34,7 @@
   // Constants
   // ============================================================
   const DEFAULT_CONFIG = {
-    configVersion: 2,
+    configVersion: 3,
     threshold: 5,
     scanInterval: 0,
     requestInterval: 450,
@@ -50,7 +50,8 @@
     autoBlackThreshold: 10,
     autoBlackEnabled: false,
     buyMode: "complete5",
-    buffer: 0,
+    orderPriceSource: "lowest",
+    priceAdjustment: 0,
     earlyPricePrediction: true,
   };
 
@@ -63,14 +64,22 @@
       const raw = GM_getValue("sbc_config", null);
       if (raw) {
         const saved = JSON.parse(raw);
-        if (!saved.configVersion || saved.configVersion < DEFAULT_CONFIG.configVersion) {
-          // migrate: force v2 timing defaults, preserve other settings
+        let migrated = false;
+        if (!saved.configVersion || saved.configVersion < 2) {
           saved.scanInterval = DEFAULT_CONFIG.scanInterval;
           saved.requestInterval = DEFAULT_CONFIG.requestInterval;
           saved.batchPause = DEFAULT_CONFIG.batchPause;
+          migrated = true;
+        }
+        if (!saved.configVersion || saved.configVersion < 3) {
+          saved.orderPriceSource = "lowest";
+          saved.priceAdjustment = Number.isFinite(saved.buffer) ? saved.buffer : 0;
+          delete saved.buffer;
+          migrated = true;
+        }
+        if (migrated) {
           saved.configVersion = DEFAULT_CONFIG.configVersion;
           saveConfig(saved);
-          return { ...defaults, ...saved };
         }
         return { ...defaults, ...saved };
       }
@@ -638,7 +647,7 @@
     }
     .sbc-game-row:hover { background: rgba(103,193,245,0.08); }
     .sbc-game-row .sbc-appid {
-      width: 50px;
+      width: 56px;
       flex-shrink: 0;
       color: #66c0f4;
       font-family: monospace;
@@ -655,21 +664,21 @@
       white-space: nowrap;
     }
     .sbc-game-row .sbc-level {
-      width: 50px;
+      width: 42px;
       flex-shrink: 0;
       color: #a1b053;
       font-size: 12px;
       text-align: center;
     }
     .sbc-game-row .sbc-cards {
-      width: 40px;
+      width: 36px;
       flex-shrink: 0;
       color: #c6d4df;
       font-size: 12px;
       text-align: center;
     }
     .sbc-game-row .sbc-cost {
-      width: 75px;
+      width: 68px;
       flex-shrink: 0;
       color: #75b022;
       font-weight: bold;
@@ -677,30 +686,68 @@
       text-align: center;
     }
     .sbc-game-row .sbc-full {
-      width: 85px;
+      width: 68px;
       flex-shrink: 0;
       color: #ffc902;
       font-size: 12px;
       text-align: center;
     }
     .sbc-game-row .sbc-lv5 {
-      width: 100px;
+      width: 84px;
       flex-shrink: 0;
       color: #e74c3c;
       font-size: 12px;
       text-align: center;
     }
     .sbc-game-row .sbc-drops {
-      width: 60px;
+      width: 36px;
       flex-shrink: 0;
       color: #8db7d7;
       font-size: 12px;
       text-align: center;
     }
-    .sbc-game-row .sbc-select {
-      width: 50px;
+    .sbc-game-row .sbc-buy {
+      width: 60px;
       flex-shrink: 0;
       text-align: center;
+    }
+    .sbc-game-row .sbc-check {
+      width: 24px;
+      flex-shrink: 0;
+      text-align: center;
+    }
+    .sbc-game-list:not(.sbc-show-drops) .sbc-drops { display: none; }
+    .sbc-result-cb {
+      margin: 0;
+      cursor: pointer;
+      accent-color: #75b022;
+    }
+    .sbc-scan-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .sbc-bulk-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-left: auto;
+    }
+    .sbc-selected-count {
+      color: #8f98a0;
+      margin-left: auto;
+      width: 24px;
+      margin-right: 14px;
+      flex-shrink: 0;
+      display: flex;
+      justify-content: center;
+      white-space: nowrap;
+    }
+    .sbc-help {
+      cursor: help;
+      color: #8f98a0;
+      font-size: 12px;
     }
     .sbc-sortable {
       cursor: pointer;
@@ -828,8 +875,78 @@
       font-size: 14px;
       color: #8f98a0;
       margin: 8px 0;
+      display: flex;
+      align-items: center;
+      gap: 12px;
     }
+    .sbc-summary-text { min-width: 0; }
     .sbc-summary b { color: #fff; }
+
+    #sbc-order-dialog-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 10020;
+      background: rgba(0,0,0,0.65);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .sbc-order-dialog {
+      width: 620px;
+      max-width: 92vw;
+      max-height: 82vh;
+      display: flex;
+      flex-direction: column;
+      background: #1b2838;
+      border: 1px solid #45556b;
+      border-radius: 4px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.7);
+      color: #c6d4df;
+    }
+    .sbc-order-dialog h3 {
+      margin: 0;
+      padding: 14px 16px;
+      color: #fff;
+      font-size: 18px;
+      border-bottom: 1px solid #45556b;
+    }
+    .sbc-order-summary {
+      padding: 12px 16px;
+      line-height: 1.7;
+    }
+    .sbc-order-summary b { color: #fff; }
+    .sbc-order-list {
+      margin: 0 16px;
+      max-height: 42vh;
+      overflow-y: auto;
+      border: 1px solid #2a3f5a;
+      background: #0e1621;
+    }
+    .sbc-order-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 55px 70px;
+      gap: 10px;
+      padding: 7px 10px;
+      border-bottom: 1px solid rgba(69,85,107,0.4);
+      font-size: 12px;
+    }
+    .sbc-order-item span:first-child {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .sbc-order-note {
+      padding: 10px 16px;
+      color: #ffc902;
+      font-size: 12px;
+    }
+    .sbc-order-dialog-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      padding: 12px 16px;
+      border-top: 1px solid #45556b;
+    }
   `);
 
   // ============================================================
@@ -862,6 +979,10 @@
     queue: null,
     sortKey: null,
     sortAsc: true,
+    selectedResults: new Set(),
+    bulkActionRunning: false,
+    pendingOrderQuantities: new Map(),
+    highestBuyPrices: new Map(),
   };
 
   function openModal() {
@@ -901,23 +1022,40 @@
               <option value="buy1" ${state.cfg.buyMode === "buy1" ? "selected" : ""}>购买单套</option>
               <option value="buy5" ${state.cfg.buyMode === "buy5" ? "selected" : ""}>购买五套</option>
             </select></label>
-            <label class="sbc-primary-label">价格上浮 ¥ <input id="sbc-buffer" class="sbc-input" type="number" min="0" step="0.01" value="${state.cfg.buffer}" style="width:60px"></label>
-            <label class="sbc-primary-label">最大徽章页数 <input id="sbc-max-pages" class="sbc-input" type="number" min="1" max="20" value="${state.cfg.maxBadgePages}"></label>
+            <label>最大徽章页数 <input id="sbc-max-pages" class="sbc-input" type="number" min="1" max="20" value="${state.cfg.maxBadgePages}"></label>
             <label>
               <input id="sbc-include-drops" type="checkbox" ${state.cfg.includeDrops ? "checked" : ""}>
               包含有掉落卡牌的游戏
             </label>
           </div>
-          <div style="display:flex; gap:10px; margin-bottom:8px;">
+          <div class="sbc-toolbar">
+            <label class="sbc-primary-label">购买价格
+              <span class="sbc-help" title="在售最低：当前最低卖单价格，通常可立即成交&#10;平均价格：Steam 返回的 median_price，用作市场参考价&#10;求购最高：当前最高买单价格，通常需要等待卖家成交&#10;仅用于自动提交长期订购单；手动购买仍使用在售最低">?</span>
+              <select id="sbc-order-price-source" class="sbc-input" style="width:118px">
+                <option value="lowest" ${state.cfg.orderPriceSource === "lowest" ? "selected" : ""}>在售最低</option>
+                <option value="median" ${state.cfg.orderPriceSource === "median" ? "selected" : ""}>平均价格</option>
+                <option value="highest" ${state.cfg.orderPriceSource === "highest" ? "selected" : ""}>求购最高</option>
+              </select>
+            </label>
+            <label class="sbc-primary-label">买价调整 ¥ <input id="sbc-price-adjustment" class="sbc-input" type="number" step="0.01" value="${state.cfg.priceAdjustment}" style="width:68px"></label>
+          </div>
+          <div class="sbc-scan-actions">
             <div class="sbc-btn" id="sbc-scan-btn">开始扫描</div>
             <div class="sbc-btn alt disabled" id="sbc-stop-btn">停止</div>
             <div class="sbc-btn alt disabled" id="sbc-skip-btn" title="跳过当前徽章">跳过当前</div>
+            <div class="sbc-bulk-actions">
+              <div class="sbc-btn alt disabled" id="sbc-recalculate-btn">重新计算</div>
+              <div class="sbc-btn disabled" id="sbc-submit-orders-btn">提交订购单</div>
+            </div>
           </div>
           <div class="sbc-progress" id="sbc-progress-wrap" style="display:none">
             <div class="sbc-progress-bar" id="sbc-progress-bar" style="width:0"></div>
             <div class="sbc-progress-text" id="sbc-progress-text">0/0</div>
           </div>
-          <div class="sbc-summary" id="sbc-summary"></div>
+          <div class="sbc-summary" id="sbc-summary-row" style="display:none">
+            <span class="sbc-summary-text" id="sbc-summary"></span>
+            <span class="sbc-selected-count" id="sbc-selected-count">已选择 0 项</span>
+          </div>
           <div class="sbc-status-text" id="sbc-status"></div>
           <div class="sbc-game-list" id="sbc-list"></div>
           <div id="sbc-log"></div>
@@ -961,11 +1099,11 @@
             <label><input id="sbc-early-price-prediction" type="checkbox" ${state.cfg.earlyPricePrediction ? "checked" : ""}> 价格预测提早跳过</label>
             <span style="color:#8f98a0;font-size:12px;">扫描部分卡牌后保守预测全套价格，超过上限时提前跳过</span>
           </div>
-          <div style="color:#8f98a0;font-size:12px;margin-top:4px;">默认值为作者测试最优稳定配置 (450ms / 45s)。如遇 429 可调高 100ms / 5s</div>
+          <div style="color:#8f98a0;font-size:12px;margin-top:4px;">默认值为作者测试最优稳定配置 (450ms / 45s)。如遇 429 可调高 100ms / 5s。gamecard 通常不需要调整，保持 0 即可。</div>
         </div>
       </div>
       <div class="sbc-footer">
-        <span class="sbc-label">V1.3.9-rc.1 · 默认货币：人民币(CNY)</span>
+        <span class="sbc-label">V1.4.2-rc.1 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -975,7 +1113,8 @@
 
     const cfgIds = ["sbc-threshold", "sbc-scan-interval",
       "sbc-req-interval", "sbc-max-pages", "sbc-include-drops",
-      "sbc-batch-size", "sbc-batch-pause", "sbc-buy-mode", "sbc-buffer",
+      "sbc-batch-size", "sbc-batch-pause", "sbc-buy-mode",
+      "sbc-order-price-source", "sbc-price-adjustment",
       "sbc-early-price-prediction"];
     cfgIds.forEach(id => {
       const el = document.getElementById(id);
@@ -989,10 +1128,18 @@
         state.cfg.batchSize = parseInt(document.getElementById("sbc-batch-size").value, 10) || 18;
         state.cfg.batchPause = parseInt(document.getElementById("sbc-batch-pause").value, 10) || 45000;
         state.cfg.buyMode = document.getElementById("sbc-buy-mode").value;
-        state.cfg.buffer = parseFloat(document.getElementById("sbc-buffer").value) || 0;
+        state.cfg.orderPriceSource = document.getElementById("sbc-order-price-source").value;
+        const adjustment = parseFloat(document.getElementById("sbc-price-adjustment").value);
+        state.cfg.priceAdjustment = Number.isFinite(adjustment) ? adjustment : 0;
         state.cfg.earlyPricePrediction = document.getElementById("sbc-early-price-prediction").checked;
         saveConfig(state.cfg);
+        updateResultColumns();
       });
+    });
+    document.getElementById("sbc-price-adjustment").addEventListener("input", event => {
+      const adjustment = parseFloat(event.target.value);
+      state.cfg.priceAdjustment = Number.isFinite(adjustment) ? adjustment : 0;
+      saveConfig(state.cfg);
     });
 
     // Tab switching
@@ -1010,6 +1157,8 @@
     document.getElementById("sbc-scan-btn").addEventListener("click", startScan);
     document.getElementById("sbc-stop-btn").addEventListener("click", requestStop);
     document.getElementById("sbc-skip-btn").addEventListener("click", skipCurrentBadge);
+    document.getElementById("sbc-recalculate-btn").addEventListener("click", recalculateSelectedResults);
+    document.getElementById("sbc-submit-orders-btn").addEventListener("click", submitSelectedBuyOrders);
 
     // Auto blacklist threshold
     document.getElementById("sbc-auto-bl-threshold").addEventListener("change", () => {
@@ -1159,6 +1308,7 @@
   }
 
   function closeModal() {
+    if (state.bulkActionRunning) return;
     if (state.scanning) {
       state.stopRequested = true;
       state.queue?.stop();
@@ -1207,6 +1357,11 @@
     if (el) el.innerHTML = html;
   }
 
+  function setSummaryVisibility(visible) {
+    const row = document.getElementById("sbc-summary-row");
+    if (row) row.style.display = visible ? "" : "none";
+  }
+
   // ============================================================
   // Animated status
   // ============================================================
@@ -1242,6 +1397,193 @@
     }
   }
 
+  function getResultKey(info) {
+    return `${info.appid}_${info.isFoil ? 1 : 0}`;
+  }
+
+  function getSelectedResults() {
+    return state.results.filter(info => state.selectedResults.has(getResultKey(info)));
+  }
+
+  function updateBulkActionState() {
+    const selectedCount = getSelectedResults().length;
+    const countEl = document.getElementById("sbc-selected-count");
+    if (countEl) countEl.textContent = `已选择 ${selectedCount} 项`;
+
+    const disabled = selectedCount === 0 || state.scanning || state.bulkActionRunning;
+    document.getElementById("sbc-recalculate-btn")?.classList.toggle("disabled", disabled);
+    document.getElementById("sbc-submit-orders-btn")?.classList.toggle("disabled", disabled);
+
+    const selectAll = document.getElementById("sbc-result-select-all");
+    if (selectAll) {
+      selectAll.checked = state.results.length > 0 && selectedCount === state.results.length;
+      selectAll.indeterminate = selectedCount > 0 && selectedCount < state.results.length;
+    }
+  }
+
+  function updateResultColumns() {
+    const showDrops = state.cfg.includeDrops
+      && state.results.some(info => Number(info.dropsRemaining) > 0);
+    document.getElementById("sbc-list")?.classList.toggle("sbc-show-drops", showDrops);
+  }
+
+  async function refreshResultInfo(existing, queue) {
+    const profileUrl = getProfileUrl();
+    if (!profileUrl) throw new Error("未找到 Profile URL");
+
+    const suffix = existing.isFoil ? "?border=1" : "";
+    const res = await queue.fetch(`${profileUrl}/gamecards/${existing.appid}/${suffix}`);
+    if (!res?.text?.includes("badge_card_set_card")) {
+      throw new Error("未找到卡牌套组");
+    }
+
+    const info = parseGameCardsHtml(res.text, existing.appid, existing.isFoil);
+    info.appid = existing.appid;
+    info.isFoil = existing.isFoil;
+    info.gameName = existing.gameName || info.gameName || "";
+    info.cardPrices = [];
+    info.cheapestSetCostCents = 0;
+    info.fullSetCostCents = 0;
+    info.level5CostCents = 0;
+
+    let setCostCents = 0;
+    let fullSetCostCents = 0;
+    let level5CostCents = 0;
+    let minVolume = Infinity;
+    const setsTo5 = Math.max(0, 5 - info.level);
+    const noPriceCards = [];
+    let failedPriceCount = 0;
+
+    for (const card of info.cards) {
+      if (!card.marketHashName) {
+        throw new Error(`卡牌“${card.name}”缺少 market hash name`);
+      }
+      const pk = await priceCard(card.marketHashName, queue);
+      if (!pk) {
+        failedPriceCount++;
+        info.hasEstimated = true;
+        continue;
+      }
+      if (pk.noPriceData) {
+        card.priceSource = "none";
+        noPriceCards.push(card);
+        info.hasEstimated = true;
+        continue;
+      }
+
+      card.lowestCents = pk.lowestSellCents;
+      card.medianCents = pk.medianCents;
+      card.volume = pk.volume;
+      card.priceSource = pk.priceSource;
+      minVolume = Math.min(minVolume, pk.volume);
+      if (pk.estimated) {
+        info.hasEstimated = true;
+        info.hasMedianFallback = true;
+      }
+      info.cardPrices.push({
+        name: card.name,
+        lowestCents: pk.lowestSellCents,
+        medianCents: pk.medianCents,
+        volume: pk.volume,
+        marketHashName: card.marketHashName,
+        priceSource: pk.priceSource,
+      });
+
+      const need1 = Math.max(0, 1 - card.owned);
+      const need5 = Math.max(0, setsTo5 - card.owned);
+      setCostCents += pk.lowestSellCents * need1;
+      fullSetCostCents += pk.lowestSellCents;
+      level5CostCents += need5 > 0
+        ? pk.lowestSellCents + (need5 - 1) * Math.max(pk.lowestSellCents, pk.medianCents)
+        : 0;
+    }
+
+    if (info.cardPrices.length === 0) {
+      throw new Error("Steam 未返回任何可用价格");
+    }
+
+    if (noPriceCards.length / info.totalInSet >= 0.5) {
+      const formulaEstimate = estimateMissingLevel5Cost(noPriceCards, info.cardPrices, setsTo5);
+      if (formulaEstimate) {
+        level5CostCents += formulaEstimate.estimatedCostCents;
+        info.hasEstimated = true;
+        info.hasFormulaEstimate = true;
+        info.formulaEstimatedCards = noPriceCards.length;
+        info.formulaEstimateUnitCents = formulaEstimate.estimatedUnitCents;
+      }
+    }
+
+    info.noPriceDataCount = noPriceCards.length;
+    info.failedPriceCount = failedPriceCount;
+    info.cheapestSetCostCents = setCostCents;
+    info.fullSetCostCents = fullSetCostCents;
+    info.level5CostCents = level5CostCents;
+    info.minVolume = minVolume === Infinity ? 0 : minVolume;
+    info.cheapestSetCNY = formatCNY(setCostCents);
+    info.fullSetCNY = formatCNY(fullSetCostCents);
+    info.level5CNY = formatCNY(level5CostCents);
+    return info;
+  }
+
+  async function recalculateSelectedResults() {
+    const selected = getSelectedResults();
+    if (selected.length === 0 || state.scanning || state.bulkActionRunning) return;
+
+    state.bulkActionRunning = true;
+    updateBulkActionState();
+    const cfg = state.cfg;
+    const queue = new RequestQueue(
+      cfg.requestInterval,
+      cfg.batchSize,
+      cfg.batchPause,
+      state,
+      setStatus,
+      log
+    );
+
+    let refreshed = 0;
+    let failed = 0;
+    try {
+      for (let index = 0; index < selected.length; index++) {
+        const existing = selected[index];
+        setStatus(`重新计算 ${index + 1}/${selected.length}: ${existing.gameName}`);
+        try {
+          const next = await refreshResultInfo(existing, queue);
+          const resultIndex = state.results.findIndex(
+            info => getResultKey(info) === getResultKey(existing)
+          );
+          if (next.level >= 5) {
+            if (resultIndex >= 0) state.results.splice(resultIndex, 1);
+            state.selectedResults.delete(getResultKey(existing));
+            log(`[${existing.appid}] ${existing.gameName}: 已满级，从结果中移除`, "info");
+          } else if (resultIndex >= 0) {
+            state.results[resultIndex] = next;
+            refreshed++;
+            log(
+              `[${existing.appid}] ${existing.gameName}: 重算完成，` +
+              `补全 ¥${next.cheapestSetCNY} | 满级 ¥${next.level5CNY}`,
+              "ok"
+            );
+          }
+        } catch (error) {
+          failed++;
+          log(
+            `[${existing.appid}] ${existing.gameName}: 重算失败 ${error?.message || error}`,
+            "err"
+          );
+        }
+      }
+    } finally {
+      queue.stop();
+      state.bulkActionRunning = false;
+      setStatus(null);
+      renderResults();
+      updateSummary();
+      updateBulkActionState();
+      log(`选中项重算结束: 成功 ${refreshed}, 失败 ${failed}`, failed ? "warn" : "ok");
+    }
+  }
+
   async function startScan() {
     if (state.scanning) return;
     if (_stopTimeout) { clearTimeout(_stopTimeout); _stopTimeout = null; }
@@ -1249,11 +1591,15 @@
     state.stopRequested = false;
     state.skipCurrent = false;
     state.results = [];
+    state.selectedResults.clear();
+    setSummary("");
+    setSummaryVisibility(false);
     document.getElementById("sbc-list").innerHTML = "";
     document.getElementById("sbc-log").innerHTML = "";
     document.getElementById("sbc-scan-btn").classList.add("disabled");
     document.getElementById("sbc-skip-btn").classList.remove("disabled");
     document.getElementById("sbc-stop-btn").classList.remove("disabled");
+    updateBulkActionState();
     setScanPhase("scanning");
     setStatus("正在扫描徽章页");
 
@@ -1282,7 +1628,6 @@
 
       if (badges.length === 0) {
         log("未找到任何有未完成进度的徽章", "warn");
-        setSummary("扫描完成: 未找到有未完成进度的徽章");
         setStatus(null);
         setScanPhase("done");
         return;
@@ -1555,8 +1900,10 @@
       }
 
       const resultCount = state.results.length;
-      setSummary(`扫描完成: 扫描 ${processed} 个徽章, 跳过 ${skipped} 个`);
-      updateSummary();
+      if (!state.stopRequested && !queue.stopped) {
+        updateSummary();
+        setSummaryVisibility(resultCount > 0);
+      }
       setStatus(null);
 
       if (resultCount > 0) {
@@ -1575,6 +1922,7 @@
       document.getElementById("sbc-scan-btn")?.classList.remove("disabled");
       document.getElementById("sbc-skip-btn")?.classList.add("disabled");
       document.getElementById("sbc-stop-btn")?.classList.add("disabled");
+      updateBulkActionState();
     }
   }
 
@@ -1598,27 +1946,30 @@
       <span class="sbc-full sbc-sortable" data-sort="full">单套最低<span class="sbc-sort-arrow">${sortArrow("full")}</span></span>
       <span class="sbc-lv5 sbc-sortable" data-sort="lv5">满级估算 <span class="sbc-sort-arrow">${sortArrow("lv5")}</span><span style="cursor:help;color:#8f98a0;font-size:11px;" title="绿色:近期成交>1，参考性较强&#10;灰色:近期成交=1，参考性不强&#10;红色:近期成交=0，参考性较弱&#10;黄色:Steam返回信息不全，采用 median_price 或公式估算，结果可能偏低">?</span></span>
       <span class="sbc-drops sbc-sortable" data-sort="drops">掉落<span class="sbc-sort-arrow">${sortArrow("drops")}</span></span>
-      <span class="sbc-select"></span>
+      <span class="sbc-buy">手动购买</span>
+      <span class="sbc-check"><input id="sbc-result-select-all" class="sbc-result-cb" type="checkbox" title="全选"></span>
     `;
     hdr.querySelectorAll(".sbc-sortable").forEach(sp => {
       sp.addEventListener("click", () => sortAndRender(sp.dataset.sort));
     });
+    hdr.querySelector("#sbc-result-select-all").addEventListener("click", e => {
+      e.stopPropagation();
+      if (e.target.checked) {
+        state.results.forEach(info => state.selectedResults.add(getResultKey(info)));
+      } else {
+        state.selectedResults.clear();
+      }
+      renderResults();
+    });
     list.appendChild(hdr);
   }
 
-  function sortAndRender(key) {
-    if (state.sortKey === key) {
-      state.sortAsc = !state.sortAsc;
-    } else {
-      state.sortKey = key;
-      state.sortAsc = true;
-    }
-    const list = document.getElementById("sbc-list");
-    list.innerHTML = "";
-    renderHeader(list);
-    const sorted = [...state.results].sort((a, b) => {
+  function getSortedResults() {
+    const sorted = [...state.results];
+    if (!state.sortKey) return sorted;
+    return sorted.sort((a, b) => {
       let va, vb;
-      switch (key) {
+      switch (state.sortKey) {
         case "appid": va = +a.appid; vb = +b.appid; break;
         case "name": va = a.gameName || ""; vb = b.gameName || ""; break;
         case "level": va = a.level; vb = b.level; break;
@@ -1636,7 +1987,32 @@
       }
       return state.sortAsc ? va - vb : vb - va;
     });
+  }
+
+  function renderResults() {
+    const list = document.getElementById("sbc-list");
+    if (!list) return;
+    list.innerHTML = "";
+    if (state.results.length === 0) {
+      updateBulkActionState();
+      updateResultColumns();
+      return;
+    }
+    renderHeader(list);
+    const sorted = getSortedResults();
     sorted.forEach(info => renderDataRow(list, info));
+    updateBulkActionState();
+    updateResultColumns();
+  }
+
+  function sortAndRender(key) {
+    if (state.sortKey === key) {
+      state.sortAsc = !state.sortAsc;
+    } else {
+      state.sortKey = key;
+      state.sortAsc = true;
+    }
+    renderResults();
   }
 
   function renderDataRow(list, info) {
@@ -1683,22 +2059,41 @@
     row.appendChild(createTextSpan("sbc-drops", info.dropsRemaining));
 
     const buyCell = document.createElement("span");
-    buyCell.className = "sbc-select";
+    buyCell.className = "sbc-buy";
     const buyLink = document.createElement("a");
     buyLink.href = "javascript:void(0)";
     buyLink.className = "sbc-buy-link";
     buyLink.dataset.appid = info.appid;
     buyLink.style.cssText = "text-decoration:underline;color:#66c0f4;cursor:pointer;";
     buyLink.textContent = "购买";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "sbc-result-cb";
+    checkbox.checked = state.selectedResults.has(getResultKey(info));
+    checkbox.title = "选择此游戏进行重新计算或提交订购单";
     buyCell.appendChild(buyLink);
     row.appendChild(buyCell);
+    const checkboxCell = document.createElement("span");
+    checkboxCell.className = "sbc-check";
+    checkboxCell.appendChild(checkbox);
+    row.appendChild(checkboxCell);
 
     buyLink.addEventListener("click", (e) => {
       e.stopPropagation();
       openMultibuy(info);
     });
+    checkbox.addEventListener("click", e => {
+      e.stopPropagation();
+      const key = getResultKey(info);
+      if (checkbox.checked) {
+        state.selectedResults.add(key);
+      } else {
+        state.selectedResults.delete(key);
+      }
+      updateBulkActionState();
+    });
     row.addEventListener("click", (e) => {
-      if (e.target.closest(".sbc-buy-link")) return;
+      if (e.target.closest(".sbc-buy-link, .sbc-result-cb")) return;
       const pUrl = getProfileUrl();
       if (pUrl) window.open(`${pUrl}/gamecards/${info.appid}/`, "_blank");
     });
@@ -1710,14 +2105,18 @@
     const list = document.getElementById("sbc-list");
     if (list.children.length === 0) renderHeader(list);
     renderDataRow(list, info);
+    updateBulkActionState();
+    updateResultColumns();
   }
 
   function updateSummary() {
+    const summary = document.getElementById("sbc-summary");
+    if (!summary) return;
     const count = state.results.length;
     const totalCNY = (state.results.reduce((s, r) => s + r.cheapestSetCostCents, 0) / 100).toFixed(2);
     const fullCNY = (state.results.reduce((s, r) => s + r.fullSetCostCents, 0) / 100).toFixed(2);
     const lv5CNY = (state.results.reduce((s, r) => s + r.level5CostCents, 0) / 100).toFixed(2);
-    document.getElementById("sbc-summary").innerHTML = `
+    summary.innerHTML = `
       共 <b>${count}</b> 个 ≤ ¥${state.cfg.threshold} (单套卡牌价格上限)，补全总价 <b>¥${totalCNY}</b>，全套总价 ¥${fullCNY}，满级总价 ¥${lv5CNY}
     `;
   }
@@ -1739,6 +2138,422 @@
       case "buy1":      return 1;
       case "buy5":      return 5;
       default:          return owned < 1 ? 1 : 0;
+    }
+  }
+
+  function getMarketMinimumPriceCents() {
+    const walletMinimum = Number(unsafeWindow.g_rgWalletInfo?.wallet_market_minimum);
+    return Number.isFinite(walletMinimum) && walletMinimum > 0 ? walletMinimum * 3 : 21;
+  }
+
+  function getSessionId() {
+    if (unsafeWindow.g_sessionID) return unsafeWindow.g_sessionID;
+    const match = document.cookie.match(/(?:^|;\s*)sessionid=([^;]+)/);
+    return match ? decodeURIComponent(match[1]) : "";
+  }
+
+  function parseMarketHashNameFromHref(href) {
+    const match = String(href || "").match(/\/market\/listings\/753\/(.+?)(?:\?|#|$)/);
+    if (!match) return "";
+    try {
+      return decodeURIComponent(match[1]);
+    } catch (_) {
+      return match[1];
+    }
+  }
+
+  async function loadActiveBuyOrders() {
+    const response = await window.fetch(
+      "https://steamcommunity.com/market/mylistings?start=0&count=100",
+      { credentials: "include" }
+    );
+    if (!response.ok) {
+      throw new Error(`读取现有订购单失败 (${response.status})`);
+    }
+    const data = await response.json();
+    if (data?.success !== true && data?.success !== 1) {
+      throw new Error("Steam 未返回现有订购单");
+    }
+
+    const doc = new DOMParser().parseFromString(data.results_html || "", "text/html");
+    const orders = new Map();
+    doc.querySelectorAll('[id^="mybuyorder_"]').forEach(row => {
+      const link = row.querySelector('a[href*="/market/listings/"]');
+      const href = link?.getAttribute("href") || "";
+      if (!href.includes("/market/listings/753/")) return;
+      const marketHashName = parseMarketHashNameFromHref(link?.getAttribute("href"));
+      if (!marketHashName) {
+        throw new Error("无法解析现有 Steam 卡牌订购单");
+      }
+
+      const quantityCell = row.querySelector(
+        ".market_listing_buyorder_qty .market_listing_price"
+      );
+      const quantity = parseInt(quantityCell?.textContent || "", 10) || 0;
+      if (quantity <= 0) {
+        throw new Error(`无法解析现有订购单数量: ${marketHashName}`);
+      }
+      const orderId = row.id.replace("mybuyorder_", "");
+      const current = orders.get(marketHashName) || { quantity: 0, orderIds: [] };
+      current.quantity += quantity;
+      if (orderId) current.orderIds.push(orderId);
+      orders.set(marketHashName, current);
+    });
+    return orders;
+  }
+
+  function getPendingOrderExpectedQuantity(marketHashName) {
+    const pending = state.pendingOrderQuantities.get(marketHashName);
+    if (!pending) return 0;
+    if (Date.now() - pending.createdAt > 2 * 60 * 1000) {
+      state.pendingOrderQuantities.delete(marketHashName);
+      return 0;
+    }
+    return pending.expectedQuantity;
+  }
+
+  function getOrderPriceSourceLabel(priceSource) {
+    if (priceSource === "median") return "平均价格";
+    if (priceSource === "highest") return "求购最高";
+    return "在售最低";
+  }
+
+  async function fetchHighestBuyPrice(marketHashName) {
+    const cached = state.highestBuyPrices.get(marketHashName);
+    if (
+      Number.isFinite(cached?.priceCents)
+      && cached.priceCents > 0
+      && Date.now() - cached.fetchedAt < 30000
+    ) {
+      return cached.priceCents;
+    }
+
+    const listingUrl =
+      `https://steamcommunity.com/market/listings/753/${encodeURIComponent(marketHashName)}`;
+    const listingResponse = await window.fetch(listingUrl, { credentials: "include" });
+    if (!listingResponse.ok) {
+      throw new Error(`读取商品页失败 (${listingResponse.status})`);
+    }
+    const listingHtml = await listingResponse.text();
+    const itemNameIdMatch =
+      listingHtml.match(/Market_LoadOrderSpread\(\s*(\d+)\s*\)/)
+      || listingHtml.match(/ItemActivityTicker\.Start\(\s*(\d+)\s*\)/);
+    if (!itemNameIdMatch) {
+      throw new Error("商品页缺少 item_nameid");
+    }
+
+    const params = new URLSearchParams({
+      country: unsafeWindow.g_strCountryCode || "CN",
+      language: unsafeWindow.g_strLanguage || "schinese",
+      currency: String(unsafeWindow.g_rgWalletInfo?.wallet_currency || 23),
+      item_nameid: itemNameIdMatch[1],
+    });
+    const histogramResponse = await window.fetch(
+      `https://steamcommunity.com/market/itemordershistogram?${params}`,
+      { credentials: "include" }
+    );
+    if (!histogramResponse.ok) {
+      throw new Error(`读取市场订单簿失败 (${histogramResponse.status})`);
+    }
+    const histogram = await histogramResponse.json();
+    const highestBuyCents = parseInt(histogram?.highest_buy_order, 10);
+    if (
+      (histogram?.success !== true && histogram?.success !== 1)
+      || !Number.isFinite(highestBuyCents)
+      || highestBuyCents <= 0
+    ) {
+      throw new Error("当前没有可用的最高求购价格");
+    }
+
+    state.highestBuyPrices.set(marketHashName, {
+      priceCents: highestBuyCents,
+      fetchedAt: Date.now(),
+    });
+    return highestBuyCents;
+  }
+
+  async function buildBuyOrderPlan(selected, activeOrders) {
+    const configuredPriceSource =
+      document.getElementById("sbc-order-price-source")?.value
+      || state.cfg.orderPriceSource
+      || "lowest";
+    const priceSource = ["lowest", "median", "highest"].includes(configuredPriceSource)
+      ? configuredPriceSource
+      : "lowest";
+    const adjustmentInput = document.getElementById("sbc-price-adjustment");
+    const adjustmentValue = adjustmentInput
+      ? parseFloat(adjustmentInput.value)
+      : state.cfg.priceAdjustment;
+    const adjustmentCents = Math.round(
+      (Number.isFinite(adjustmentValue) ? adjustmentValue : 0) * 100
+    );
+    const minimumCents = getMarketMinimumPriceCents();
+    const plan = [];
+    const skipped = {
+      covered: 0,
+      missingPrice: 0,
+      missingHash: 0,
+      clamped: 0,
+    };
+    const candidates = [];
+
+    for (const info of selected) {
+      for (const card of info.cards) {
+        if (!card.marketHashName) {
+          skipped.missingHash++;
+          continue;
+        }
+
+        const targetQuantity = getMultibuyQuantity(
+          state.cfg.buyMode || "complete1",
+          info.level,
+          card.owned
+        );
+        if (targetQuantity <= 0) continue;
+
+        const activeQuantity = activeOrders.get(card.marketHashName)?.quantity || 0;
+        const pendingQuantity = getPendingOrderExpectedQuantity(card.marketHashName);
+        const reservedQuantity = Math.max(activeQuantity, pendingQuantity);
+        const quantity = Math.max(0, targetQuantity - reservedQuantity);
+        if (quantity <= 0) {
+          skipped.covered++;
+          continue;
+        }
+
+        candidates.push({
+          info,
+          card,
+          quantity,
+          reservedQuantity,
+          targetQuantity,
+        });
+      }
+    }
+
+    for (let index = 0; index < candidates.length; index++) {
+      const { info, card, quantity, reservedQuantity, targetQuantity } = candidates[index];
+      let basePriceCents = null;
+      if (
+        priceSource === "lowest"
+        && card.priceSource === "lowest"
+        && Number.isFinite(card.lowestCents)
+        && card.lowestCents > 0
+      ) {
+        basePriceCents = card.lowestCents;
+      } else if (
+        priceSource === "median"
+        && Number.isFinite(card.medianCents)
+        && card.medianCents > 0
+      ) {
+        basePriceCents = card.medianCents;
+      } else if (priceSource === "highest") {
+        setStatus(`读取求购最高 ${index + 1}/${candidates.length}: ${card.name}`);
+        try {
+          basePriceCents = await fetchHighestBuyPrice(card.marketHashName);
+        } catch (error) {
+          log(
+            `  ${info.gameName} · ${card.name}: ${error?.message || error}，已跳过`,
+            "warn"
+          );
+        }
+      }
+      if (basePriceCents == null) {
+        skipped.missingPrice++;
+        continue;
+      }
+
+      const adjustedPrice = basePriceCents + adjustmentCents;
+      const unitPriceCents = Math.max(minimumCents, adjustedPrice);
+      if (unitPriceCents !== adjustedPrice) skipped.clamped++;
+      plan.push({
+        appid: info.appid,
+        gameName: info.gameName,
+        cardName: card.name,
+        marketHashName: card.marketHashName,
+        quantity,
+        reservedQuantity,
+        targetQuantity,
+        basePriceCents,
+        unitPriceCents,
+        totalPriceCents: unitPriceCents * quantity,
+      });
+    }
+
+    return { plan, skipped, priceSource, adjustmentCents, minimumCents };
+  }
+
+  function showBuyOrderConfirmation(planData, selectedGameCount) {
+    return new Promise(resolve => {
+      const { plan, skipped, priceSource, adjustmentCents, minimumCents } = planData;
+      const backdrop = document.createElement("div");
+      backdrop.id = "sbc-order-dialog-backdrop";
+      const totalQuantity = plan.reduce((sum, item) => sum + item.quantity, 0);
+      const totalCents = plan.reduce((sum, item) => sum + item.totalPriceCents, 0);
+      const plannedGameCount = new Set(plan.map(item => `${item.appid}:${item.gameName}`)).size;
+      const adjustmentText = `${adjustmentCents >= 0 ? "+" : "-"}¥${formatCNY(Math.abs(adjustmentCents))}`;
+
+      backdrop.innerHTML = `
+        <div class="sbc-order-dialog">
+          <h3>确认提交长期订购单</h3>
+          <div class="sbc-order-summary">
+            游戏 <b>${plannedGameCount}</b>/${selectedGameCount} 个 · 卡牌种类 <b>${plan.length}</b> ·
+            数量 <b>${totalQuantity}</b> 张 · 新增最高占用 <b>¥${formatCNY(totalCents)}</b><br>
+            价格基准 <b>${getOrderPriceSourceLabel(priceSource)}</b> ·
+            买价调整 <b>${adjustmentText}</b>
+          </div>
+          <div class="sbc-order-list"></div>
+          <div class="sbc-order-note"></div>
+          <div class="sbc-order-dialog-actions">
+            <div class="sbc-btn alt" data-action="cancel">取消</div>
+            <div class="sbc-btn" data-action="confirm">提交订购单</div>
+          </div>
+        </div>
+      `;
+
+      const list = backdrop.querySelector(".sbc-order-list");
+      plan.forEach(item => {
+        const row = document.createElement("div");
+        row.className = "sbc-order-item";
+        row.title = `${item.gameName} · ${item.marketHashName}`;
+        row.appendChild(createTextSpan("", `${item.gameName} · ${item.cardName}`));
+        row.appendChild(createTextSpan("", `${item.quantity} 张`));
+        row.appendChild(createTextSpan("", `¥${formatCNY(item.unitPriceCents)}`));
+        list.appendChild(row);
+      });
+
+      const notes = [];
+      if (skipped.covered) notes.push(`${skipped.covered} 种卡牌已被现有订购单覆盖`);
+      if (skipped.missingPrice) notes.push(`${skipped.missingPrice} 种卡牌缺少所选价格，已跳过`);
+      if (skipped.missingHash) notes.push(`${skipped.missingHash} 种卡牌缺少市场标识，已跳过`);
+      if (skipped.clamped) {
+        notes.push(`${skipped.clamped} 种卡牌低于 Steam 最低价，已调整为 ¥${formatCNY(minimumCents)}`);
+      }
+      backdrop.querySelector(".sbc-order-note").textContent =
+        `${notes.join("；") || "未发现需跳过的卡牌"}。` +
+        "订单将长期保留，直到成交或手动取消；提交即表示同意 Steam 订户协议。";
+
+      const finish = confirmed => {
+        backdrop.remove();
+        resolve(confirmed);
+      };
+      backdrop.querySelector('[data-action="cancel"]').addEventListener("click", () => finish(false));
+      backdrop.querySelector('[data-action="confirm"]').addEventListener("click", () => finish(true));
+      backdrop.addEventListener("click", event => {
+        if (event.target === backdrop) finish(false);
+      });
+      document.body.appendChild(backdrop);
+    });
+  }
+
+  async function createLongTermBuyOrder(item) {
+    const sessionId = getSessionId();
+    if (!sessionId) throw new Error("未找到 Steam sessionid");
+    if (unsafeWindow.g_bRequiresBillingInfo === true) {
+      throw new Error("Steam 要求补充账单信息，请先在市场页面手动提交一次订单");
+    }
+
+    let confirmation = 0;
+    for (let attempt = 0; attempt < 41; attempt++) {
+      const body = new URLSearchParams({
+        sessionid: sessionId,
+        currency: String(unsafeWindow.g_rgWalletInfo?.wallet_currency || 23),
+        appid: "753",
+        market_hash_name: item.marketHashName,
+        price_total: String(item.totalPriceCents),
+        quantity: String(item.quantity),
+        first_name: "",
+        last_name: "",
+        billing_address: "",
+        billing_address_two: "",
+        billing_country: "",
+        billing_city: "",
+        billing_state: "",
+        billing_postal_code: "",
+        save_my_address: "0",
+        confirmation: String(confirmation || 0),
+      });
+      const response = await window.fetch(
+        "https://steamcommunity.com/market/createbuyorder/",
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+          body: body.toString(),
+        }
+      );
+      const text = await response.text();
+      let data = null;
+      try { data = JSON.parse(text); } catch (_) {}
+
+      if (data?.success === 1) return data;
+      if (data?.need_confirmation && data?.confirmation?.confirmation_id) {
+        confirmation = data.confirmation.confirmation_id;
+        if (attempt === 0) {
+          log(`  ${item.cardName}: 等待 Steam 移动确认`, "warn");
+          setStatus(`请在 Steam 移动应用中确认: ${item.cardName}`);
+        }
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        continue;
+      }
+      throw new Error(data?.message || `提交失败 (${response.status})`);
+    }
+    throw new Error("等待 Steam 移动确认超时");
+  }
+
+  async function submitSelectedBuyOrders() {
+    const selected = getSelectedResults();
+    if (selected.length === 0 || state.scanning || state.bulkActionRunning) return;
+
+    state.bulkActionRunning = true;
+    updateBulkActionState();
+    let submitted = 0;
+    let failed = 0;
+    try {
+      setStatus("读取现有订购单");
+      const activeOrders = await loadActiveBuyOrders();
+      const planData = await buildBuyOrderPlan(selected, activeOrders);
+      if (planData.plan.length === 0) {
+        log(
+          `无需提交订购单：已有订单已覆盖，或没有可用的${getOrderPriceSourceLabel(planData.priceSource)}`,
+          "warn"
+        );
+        return;
+      }
+
+      const confirmed = await showBuyOrderConfirmation(planData, selected.length);
+      if (!confirmed) return;
+
+      for (let index = 0; index < planData.plan.length; index++) {
+        const item = planData.plan[index];
+        setStatus(`提交订购单 ${index + 1}/${planData.plan.length}: ${item.cardName}`);
+        try {
+          const result = await createLongTermBuyOrder(item);
+          submitted++;
+          state.pendingOrderQuantities.set(item.marketHashName, {
+            expectedQuantity: item.reservedQuantity + item.quantity,
+            createdAt: Date.now(),
+          });
+          log(
+            `  ✓ ${item.gameName} · ${item.cardName}: ${item.quantity} 张 @ ` +
+            `¥${formatCNY(item.unitPriceCents)}，订单 ${result.buy_orderid}`,
+            "ok"
+          );
+        } catch (error) {
+          failed++;
+          log(
+            `  ✗ ${item.gameName} · ${item.cardName}: ${error?.message || error}`,
+            "err"
+          );
+        }
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      log(`长期订购单提交结束: 成功 ${submitted}, 失败 ${failed}`, failed ? "warn" : "ok");
+    } catch (error) {
+      log(`无法提交长期订购单: ${error?.message || error}`, "err");
+    } finally {
+      state.bulkActionRunning = false;
+      setStatus(null);
+      updateBulkActionState();
     }
   }
 
@@ -1885,9 +2700,13 @@
       params.set("steamdb_return_to", `${profileUrl}/gamecards/${info.appid}/`);
     }
 
-    const bufferInput = document.getElementById("sbc-buffer");
-    const bufferValue = bufferInput ? parseFloat(bufferInput.value) : state.cfg.buffer;
-    const bufferCents = Math.round((Number.isFinite(bufferValue) ? bufferValue : 0) * 100);
+    const adjustmentInput = document.getElementById("sbc-price-adjustment");
+    const adjustmentValue = adjustmentInput
+      ? parseFloat(adjustmentInput.value)
+      : state.cfg.priceAdjustment;
+    const bufferCents = Math.round(
+      (Number.isFinite(adjustmentValue) ? adjustmentValue : 0) * 100
+    );
     const buyData = {
       appid: info.appid,
       gameName: info.gameName,
@@ -1998,7 +2817,9 @@
         if (card.lowestCents > 0) {
           changed = setMultibuyFieldValue(
             price,
-            ((card.lowestCents + bufferCents) / 100).toFixed(2)
+            (
+              Math.max(getMarketMinimumPriceCents(), card.lowestCents + bufferCents) / 100
+            ).toFixed(2)
           ) || changed;
         }
         if (quantity) {
