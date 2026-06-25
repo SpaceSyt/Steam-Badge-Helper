@@ -2,7 +2,7 @@
 // @name         Steam Badge Helper
 // @name:zh-CN   Steam 徽章助手
 // @namespace    https://github.com/SpaceSyt/Steam-Badge-Helper
-// @version      1.4.2-rc.1
+// @version      1.4.2-rc.2
 // @description  Scan Steam badges, batch query card prices, estimate full set costs
 // @description:zh-CN 扫描 Steam 徽章，批量查询卡牌价格，估算全套成本
 // @author       SpaceSyt
@@ -1103,7 +1103,7 @@
         </div>
       </div>
       <div class="sbc-footer">
-        <span class="sbc-label">V1.4.2-rc.1 · 默认货币：人民币(CNY)</span>
+        <span class="sbc-label">V1.4.2-rc.2 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -2218,6 +2218,40 @@
     return "在售最低";
   }
 
+  function parseMarketOrderbookFromListingHtml(listingHtml, marketHashName) {
+    const renderContextMatch = String(listingHtml || "").match(
+      /window\.SSR\.renderContext=JSON\.parse\(("(?:\\.|[^"\\])*")\);/
+    );
+    if (!renderContextMatch) return null;
+
+    try {
+      const renderContext = JSON.parse(JSON.parse(renderContextMatch[1]));
+      const queryData = JSON.parse(renderContext?.queryData || "{}");
+      const queries = Array.isArray(queryData?.queries) ? queryData.queries : [];
+      const orderbookQuery = queries.find(query => {
+        const key = query?.queryKey;
+        return Array.isArray(key)
+          && key[0] === "market"
+          && key[1] === "orderbook"
+          && String(key[2]) === "753"
+          && key[3] === marketHashName;
+      }) || queries.find(query => {
+        const data = query?.state?.data;
+        return data && Object.prototype.hasOwnProperty.call(data, "amtMaxBuyOrder");
+      });
+      const orderbook = orderbookQuery?.state?.data;
+      const highestBuyCents = Number(orderbook?.amtMaxBuyOrder);
+      const currency = Number(orderbook?.eCurrency);
+      if (!Number.isFinite(highestBuyCents) || highestBuyCents < 0) return null;
+      return {
+        highestBuyCents,
+        currency: Number.isFinite(currency) ? currency : null,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
   async function fetchHighestBuyPrice(marketHashName) {
     const cached = state.highestBuyPrices.get(marketHashName);
     if (
@@ -2235,11 +2269,37 @@
       throw new Error(`读取商品页失败 (${listingResponse.status})`);
     }
     const listingHtml = await listingResponse.text();
+    const newOrderbook = parseMarketOrderbookFromListingHtml(
+      listingHtml,
+      marketHashName
+    );
+    if (newOrderbook) {
+      const walletCurrency = Number(
+        unsafeWindow.g_rgWalletInfo?.wallet_currency || 23
+      );
+      if (
+        newOrderbook.currency != null
+        && newOrderbook.currency !== walletCurrency
+      ) {
+        throw new Error(
+          `商品页币种不一致 (${newOrderbook.currency}/${walletCurrency})`
+        );
+      }
+      if (newOrderbook.highestBuyCents <= 0) {
+        throw new Error("当前没有可用的最高求购价格");
+      }
+      state.highestBuyPrices.set(marketHashName, {
+        priceCents: newOrderbook.highestBuyCents,
+        fetchedAt: Date.now(),
+      });
+      return newOrderbook.highestBuyCents;
+    }
+
     const itemNameIdMatch =
       listingHtml.match(/Market_LoadOrderSpread\(\s*(\d+)\s*\)/)
       || listingHtml.match(/ItemActivityTicker\.Start\(\s*(\d+)\s*\)/);
     if (!itemNameIdMatch) {
-      throw new Error("商品页缺少 item_nameid");
+      throw new Error("商品页缺少可用的订单簿数据");
     }
 
     const params = new URLSearchParams({
