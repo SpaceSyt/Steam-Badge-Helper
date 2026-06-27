@@ -2,7 +2,7 @@
 // @name         Steam Trading Card Helper
 // @name:zh-CN   Steam 卡牌助手
 // @namespace    https://github.com/SpaceSyt/Steam-Trading-Card-Helper
-// @version      1.5.7
+// @version      1.5.8
 // @description  Scan card prices, estimate badge costs, streamline purchases, craft badges, and buy seasonal badge levels
 // @description:zh-CN 扫描卡牌价格、估算徽章成本、辅助批量购买、自动合成徽章并购买季节徽章等级
 // @author       SpaceSyt
@@ -59,16 +59,14 @@
     earlyPricePrediction: true,
     craftInterval: 500,
     craftMode: "step",
-    seasonalMode: "step",
-    seasonalCurrentLevel: 0,
     seasonalTargetLevel: 40,
     seasonalInterval: 200,
   };
-  const SEASONAL_BADGE_FALLBACK_APPID = 4844660;
-  const SEASONAL_BADGE_FALLBACK_NAME = "2026 夏季徽章";
+  // Update these manually for each seasonal sale.
+  const SEASONAL_BADGE_NAME = "2026 夏季徽章";
+  const SEASONAL_BADGE_DEFID = 3094368;
   const SEASONAL_BADGE_MAX_LEVEL = 40;
   const SEASONAL_BADGE_DEFAULT_COST = 1000;
-  const STEAM_STORE_ORIGIN = "https://store.steampowered.com";
   const SEASONAL_POINTS_SHOP_URL = "https://store.steampowered.com/points/shop/c/steambadge";
 
   // ============================================================
@@ -1263,7 +1261,6 @@
     craftActionRunning: false,
     craftStopRequested: false,
     craftQueue: null,
-    seasonalInfo: null,
     seasonalActionRunning: false,
     seasonalStopRequested: false,
   };
@@ -1407,17 +1404,9 @@
         </div>
         <div class="stch-tab-content ${activeClass("seasonal")}" id="stch-tab-seasonal">
           <div class="stch-toolbar">
-            <label class="stch-primary-label">购买模式
-              <select id="stch-seasonal-mode" class="stch-input" style="width:100px">
-                <option value="step" ${state.cfg.seasonalMode === "step" ? "selected" : ""}>逐级购买</option>
-                <option value="max" ${state.cfg.seasonalMode === "max" ? "selected" : ""}>一次买满</option>
-              </select>
-            </label>
-            <label>目标等级 <input id="stch-seasonal-target" class="stch-input" type="number" min="${Math.max(1, state.cfg.seasonalCurrentLevel)}" max="${SEASONAL_BADGE_MAX_LEVEL}" step="1" value="${state.cfg.seasonalTargetLevel}" style="width:56px"></label>
-            <label>购买间隔 <input id="stch-seasonal-interval" class="stch-input" type="number" min="0" step="50" value="${state.cfg.seasonalInterval}" style="width:70px"> ms</label>
+            <label class="stch-primary-label">目标等级 <input id="stch-seasonal-target" class="stch-input" type="number" min="1" max="${SEASONAL_BADGE_MAX_LEVEL}" step="1" value="${state.cfg.seasonalTargetLevel}" style="width:56px"></label>
           </div>
           <div class="stch-scan-actions">
-            <div class="stch-btn alt" id="stch-seasonal-load-btn">读取 2026 夏季徽章</div>
             <div class="stch-btn" id="stch-seasonal-buy-btn">开始购买</div>
             <div class="stch-btn alt disabled" id="stch-seasonal-stop-btn">停止</div>
           </div>
@@ -1426,8 +1415,7 @@
             <div class="stch-progress-text" id="stch-seasonal-progress-text">0/0</div>
           </div>
           <div class="stch-seasonal-panel" id="stch-seasonal-summary">
-            尚未读取 2026 夏季徽章信息。
-            <div class="stch-seasonal-note">购买会消耗 Steam 点数；脚本无法撤销已提交的点数兑换。</div>
+            2026 夏季徽章
           </div>
           <div class="stch-status-text" id="stch-seasonal-status"></div>
           <div id="stch-seasonal-log"></div>
@@ -1486,7 +1474,7 @@
         </div>
       </div>
       <div class="stch-footer">
-        <span class="stch-label">V1.5.7 · 默认货币：人民币(CNY)</span>
+        <span class="stch-label">V1.5.8 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -1499,8 +1487,7 @@
       "stch-batch-size", "stch-batch-pause", "stch-buy-mode",
       "stch-order-price-source", "stch-price-adjustment",
       "stch-early-price-prediction", "stch-craft-interval",
-      "stch-craft-mode", "stch-seasonal-mode",
-      "stch-seasonal-target", "stch-seasonal-interval"];
+      "stch-craft-mode", "stch-seasonal-target"];
     cfgIds.forEach(id => {
       const el = document.getElementById(id);
       if (!el) return;
@@ -1523,20 +1510,13 @@
             || DEFAULT_CONFIG.craftInterval
         );
         state.cfg.craftMode = document.getElementById("stch-craft-mode").value;
-        state.cfg.seasonalMode = document.getElementById("stch-seasonal-mode").value;
         state.cfg.seasonalTargetLevel = Math.max(
-          state.cfg.seasonalCurrentLevel,
+          1,
           Math.min(
             SEASONAL_BADGE_MAX_LEVEL,
             parseInt(document.getElementById("stch-seasonal-target").value, 10)
               || DEFAULT_CONFIG.seasonalTargetLevel
           )
-        );
-        state.cfg.seasonalInterval = Math.max(
-          0,
-          Number.isFinite(parseInt(document.getElementById("stch-seasonal-interval").value, 10))
-            ? parseInt(document.getElementById("stch-seasonal-interval").value, 10)
-            : DEFAULT_CONFIG.seasonalInterval
         );
         saveConfig(state.cfg);
         const craftMaxPages = document.getElementById("stch-craft-max-pages");
@@ -1595,7 +1575,6 @@
     document.getElementById("stch-craft-max-btn").addEventListener("click", () => setAllCraftCounts("max"));
     document.getElementById("stch-craft-clear-btn").addEventListener("click", () => setAllCraftCounts("clear"));
     document.getElementById("stch-craft-submit-btn").addEventListener("click", submitCraftPlan);
-    document.getElementById("stch-seasonal-load-btn").addEventListener("click", loadSeasonalBadgeInfo);
     document.getElementById("stch-seasonal-buy-btn").addEventListener("click", startSeasonalPurchase);
     document.getElementById("stch-seasonal-stop-btn").addEventListener("click", requestSeasonalStop);
     document.getElementById("stch-craft-max-pages").addEventListener("change", event => {
@@ -1917,49 +1896,26 @@
   }
 
   function normalizeSeasonalInputs() {
-    const modeEl = document.getElementById("stch-seasonal-mode");
     const targetEl = document.getElementById("stch-seasonal-target");
-    const intervalEl = document.getElementById("stch-seasonal-interval");
-
-    if (modeEl) {
-      state.cfg.seasonalMode = modeEl.value === "max" ? "max" : "step";
-    }
-    state.cfg.seasonalCurrentLevel = clampNumber(
-      state.cfg.seasonalCurrentLevel,
-      0,
-      SEASONAL_BADGE_MAX_LEVEL,
-      DEFAULT_CONFIG.seasonalCurrentLevel
-    );
     if (targetEl) {
-      const minTarget = Math.max(1, state.cfg.seasonalCurrentLevel);
       state.cfg.seasonalTargetLevel = clampNumber(
         targetEl.value,
-        minTarget,
+        1,
         SEASONAL_BADGE_MAX_LEVEL,
-        Math.max(DEFAULT_CONFIG.seasonalTargetLevel, minTarget)
+        DEFAULT_CONFIG.seasonalTargetLevel
       );
-      targetEl.min = String(minTarget);
+      targetEl.min = "1";
       targetEl.value = String(state.cfg.seasonalTargetLevel);
-    }
-    if (intervalEl) {
-      const interval = parseInt(intervalEl.value, 10);
-      state.cfg.seasonalInterval = Number.isFinite(interval)
-        ? Math.max(0, interval)
-        : DEFAULT_CONFIG.seasonalInterval;
-      intervalEl.value = String(state.cfg.seasonalInterval);
     }
     saveConfig(state.cfg);
   }
 
   function getSeasonalPlan() {
     normalizeSeasonalInputs();
-    const currentLevel = state.cfg.seasonalCurrentLevel;
     const targetLevel = state.cfg.seasonalTargetLevel;
     return {
-      mode: state.cfg.seasonalMode === "max" ? "max" : "step",
-      currentLevel,
       targetLevel,
-      levels: Math.max(0, targetLevel - currentLevel),
+      levels: Math.max(0, targetLevel),
       interval: Math.max(0, state.cfg.seasonalInterval),
     };
   }
@@ -1968,16 +1924,12 @@
     const summary = document.getElementById("stch-seasonal-summary");
     if (!summary) return;
     const plan = getSeasonalPlan();
-    const info = state.seasonalInfo;
-    const pointCost = info?.pointCost || SEASONAL_BADGE_DEFAULT_COST;
+    const pointCost = SEASONAL_BADGE_DEFAULT_COST;
     const totalCost = pointCost * plan.levels;
-    const modeLabel = plan.mode === "max" ? "一次买满" : "逐级购买";
-    const nameText = escapeHtml(info?.name || SEASONAL_BADGE_FALLBACK_NAME);
 
     summary.innerHTML = `
-      <div><b>${nameText}</b> · 每级约 <b>${pointCost.toLocaleString()}</b> 点</div>
-      <div>当前 Lv<b>${plan.currentLevel}</b> → 目标 Lv<b>${plan.targetLevel}</b> · ${modeLabel} <b>${plan.levels}</b> 级 · 预计 <b>${totalCost.toLocaleString()}</b> 点</div>
-      ${plan.levels <= 0 ? '<div class="stch-seasonal-warning">目标等级需要高于当前等级才会购买。</div>' : ""}
+      <div><b>${SEASONAL_BADGE_NAME}</b> · 每级约 <b>${pointCost.toLocaleString()}</b> 点</div>
+      <div>将尝试 Lv<b>1</b> 到 Lv<b>${plan.targetLevel}</b> · 最多 <b>${plan.levels}</b> 次 · 最多 <b>${totalCost.toLocaleString()}</b> 点</div>
     `;
     updateSeasonalActionState();
   }
@@ -1989,20 +1941,15 @@
       || state.craftScanning
       || state.craftActionRunning;
     const plan = (() => {
-      const currentLevel = state.cfg.seasonalCurrentLevel;
       const targetLevel = clampNumber(
         document.getElementById("stch-seasonal-target")?.value,
-        Math.max(1, currentLevel),
+        1,
         SEASONAL_BADGE_MAX_LEVEL,
         state.cfg.seasonalTargetLevel
       );
-      return { levels: Math.max(0, targetLevel - currentLevel) };
+      return { levels: Math.max(0, targetLevel) };
     })();
 
-    document.getElementById("stch-seasonal-load-btn")?.classList.toggle(
-      "disabled",
-      seasonalBusy || otherBusy
-    );
     document.getElementById("stch-seasonal-buy-btn")?.classList.toggle(
       "disabled",
       seasonalBusy || otherBusy || plan.levels <= 0
@@ -2012,9 +1959,7 @@
       !seasonalBusy
     );
     [
-      "stch-seasonal-mode",
       "stch-seasonal-target",
-      "stch-seasonal-interval",
     ].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.disabled = seasonalBusy || otherBusy;
@@ -2109,8 +2054,6 @@
 
     return {
       token,
-      language: config.LANGUAGE || unsafeWindow.g_strLanguage || "schinese",
-      appid: SEASONAL_BADGE_FALLBACK_APPID,
     };
   }
 
@@ -2124,33 +2067,16 @@
     return qs ? `${url}?${qs}` : url;
   }
 
-  async function requestSteamWebApi(methodName, token, payload, options = {}) {
+  async function requestSteamWebApi(methodName, token, payload) {
     const endpoint = `https://api.steampowered.com/ILoyaltyRewardsService/${methodName}/v1`;
-    const params = {};
-    const useAuth = options.auth !== false;
-    if (useAuth && token) params.access_token = token;
-
-    let response = null;
-    if (options.constMethod) {
-      response = await requestExternalText({
-        method: "GET",
-        url: appendQuery(endpoint, {
-          ...params,
-          origin: STEAM_STORE_ORIGIN,
-          input_json: JSON.stringify(payload),
-        }),
-        timeout: 20000,
-      });
-    } else {
-      const body = new FormData();
-      body.append("input_json", JSON.stringify(payload));
-      response = await requestExternalText({
-        method: "POST",
-        url: appendQuery(endpoint, params),
-        data: body,
-        timeout: 20000,
-      });
-    }
+    const body = new FormData();
+    body.append("input_json", JSON.stringify(payload));
+    const response = await requestExternalText({
+      method: "POST",
+      url: appendQuery(endpoint, { access_token: token }),
+      data: body,
+      timeout: 20000,
+    });
 
     if (response.status === 429) {
       throw buildHttpError(429);
@@ -2191,187 +2117,18 @@
     return data;
   }
 
-  function collectRewardDefinitions(node, output = [], depth = 0) {
-    if (!node || depth > 8) return output;
-    if (Array.isArray(node)) {
-      node.forEach(item => collectRewardDefinitions(item, output, depth + 1));
-      return output;
-    }
-    if (typeof node !== "object") return output;
-
-    const defid = Number(node.defid || node.def_id || node.item_defid);
-    if (Number.isFinite(defid) && defid > 0) {
-      output.push(node);
-    }
-    Object.keys(node).forEach(key => {
-      if (["image", "image_large", "image_small", "video"].includes(key)) return;
-      collectRewardDefinitions(node[key], output, depth + 1);
-    });
-    return output;
-  }
-
-  function getDefinitionNumber(definition, names, fallback = 0) {
-    for (const name of names) {
-      const value = Number(definition?.[name]);
-      if (Number.isFinite(value) && value > 0) return value;
-    }
-    return fallback;
-  }
-
-  function getDefinitionName(definition) {
-    const candidates = [
-      definition?.name,
-      definition?.title,
-      definition?.localized_name,
-      definition?.item_name,
-      definition?.community_item_name,
-      definition?.item_title,
-    ];
-    return candidates.find(Boolean) || "Steam 季节徽章";
-  }
-
-  function getSeasonalBadgeDisplayName(definition) {
-    const rawName = [
-      definition?.name,
-      definition?.raw?.internal_description,
-      definition?.raw?.community_item_data?.item_name,
-      definition?.raw?.community_item_data?.item_title,
-    ].filter(Boolean).join(" ");
-    const year = rawName.match(/\b(20\d{2})\b/)?.[1];
-    if (year && /summer|夏季|夏日/i.test(rawName)) {
-      return `${year} 夏季徽章`;
-    }
-    return SEASONAL_BADGE_FALLBACK_NAME;
-  }
-
-  function selectSeasonalDefinition(definitions, appid) {
-    const normalized = definitions
-      .map(definition => ({
-        raw: definition,
-        defid: getDefinitionNumber(definition, ["defid", "def_id", "item_defid"]),
-        appid: getDefinitionNumber(definition, ["appid", "app_id"], appid),
-        pointCost: getDefinitionNumber(definition, ["point_cost", "points_cost", "cost"], SEASONAL_BADGE_DEFAULT_COST),
-        name: getDefinitionName(definition),
-      }))
-      .filter(definition => definition.defid > 0);
-    const appDefinitions = normalized.filter(definition =>
-      !definition.appid || Number(definition.appid) === Number(appid)
-    );
-    const usable = appDefinitions.length ? appDefinitions : normalized;
-    const badgeLike = usable.find(definition =>
-      /badge|徽章|seasonal|季节|summer|winter|sale/i.test(
-        `${definition.name} ${JSON.stringify(definition.raw).slice(0, 500)}`
-      )
-    );
-    return badgeLike || usable[0] || null;
-  }
-
-  async function querySeasonalBadgeDefinition(context) {
-    const request = {
-      appids: [Number(context.appid)],
-      count: 50,
-      language: context.language || "schinese",
-      include_direct_purchase_disabled: true,
-    };
-    const attempts = [
-      {
-        method: "BatchedQueryRewardItems",
-        payload: { requests: [request] },
-      },
-      {
-        method: "BatchedQueryRewardItems",
-        payload: { queries: [request] },
-      },
-      {
-        method: "QueryRewardItems",
-        payload: request,
-      },
-    ];
-    let lastError = null;
-
-    for (const attempt of attempts) {
-      try {
-        const data = await requestSteamWebApi(
-          attempt.method,
-          context.token,
-          attempt.payload,
-          { constMethod: true, auth: false }
-        );
-        const definitions = collectRewardDefinitions(data);
-        const selected = selectSeasonalDefinition(definitions, context.appid);
-        if (selected) return selected;
-        lastError = new Error(`${attempt.method} 未返回徽章定义`);
-      } catch (error) {
-        lastError = error;
-      }
-    }
-
-    throw lastError || new Error("未找到当前季节徽章定义");
-  }
-
-  async function resolveSeasonalBadgeInfo() {
+  async function getSeasonalBadgeInfo() {
     const context = await loadSeasonalStoreContext();
-    const definition = await querySeasonalBadgeDefinition(context);
     return {
       token: context.token,
-      appid: definition.appid || context.appid,
-      defid: definition.defid,
-      name: getSeasonalBadgeDisplayName(definition),
-      pointCost: definition.pointCost || SEASONAL_BADGE_DEFAULT_COST,
+      defid: SEASONAL_BADGE_DEFID,
+      name: SEASONAL_BADGE_NAME,
+      pointCost: SEASONAL_BADGE_DEFAULT_COST,
     };
-  }
-
-  async function loadSeasonalBadgeInfo() {
-    if (
-      state.seasonalActionRunning
-      || state.scanning
-      || state.bulkActionRunning
-      || state.craftScanning
-      || state.craftActionRunning
-    ) {
-      return;
-    }
-
-    const logBox = document.getElementById("stch-seasonal-log");
-    if (logBox) logBox.innerHTML = "";
-    state.seasonalActionRunning = true;
-    state.seasonalStopRequested = false;
-    updateSeasonalActionState();
-    updateBulkActionState();
-    updateCraftActionState();
-    setSeasonalStatus("读取 Steam 点数商店");
-
-    try {
-      const info = await resolveSeasonalBadgeInfo();
-      state.seasonalInfo = info;
-      seasonalLog(
-        `已读取 ${info.name}，每级约 ${info.pointCost.toLocaleString()} 点`,
-        "ok"
-      );
-      updateSeasonalSummary();
-    } catch (error) {
-      if (error?.status === 429) {
-        seasonalLog(
-          "Steam 返回 429；建议等待至少半小时或者更换 IP 后再继续",
-          "warn"
-        );
-      } else {
-        seasonalLog(`读取季节徽章失败: ${error?.message || error}`, "err");
-      }
-    } finally {
-      state.seasonalActionRunning = false;
-      state.seasonalStopRequested = false;
-      setSeasonalStatus(null);
-      hideSeasonalProgress();
-      updateSeasonalActionState();
-      updateBulkActionState();
-      updateCraftActionState();
-    }
   }
 
   function showSeasonalConfirmation(info, plan) {
     return new Promise(resolve => {
-      const modeLabel = plan.mode === "max" ? "一次买满" : "逐级购买";
       const totalCost = (info.pointCost || SEASONAL_BADGE_DEFAULT_COST) * plan.levels;
       const backdrop = document.createElement("div");
       backdrop.id = "stch-order-dialog-backdrop";
@@ -2379,9 +2136,8 @@
         <div class="stch-order-dialog">
           <h3>确认购买 ${escapeHtml(info.name)}</h3>
           <div class="stch-order-summary">
-            徽章 <b>${escapeHtml(info.name)}</b> · 模式 <b>${modeLabel}</b><br>
-            Lv<b>${plan.currentLevel}</b> → Lv<b>${plan.targetLevel}</b> ·
-            购买 <b>${plan.levels}</b> 级 · 预计消耗 <b>${totalCost.toLocaleString()}</b> 点
+            将从 Lv<b>1</b> 试到 Lv<b>${plan.targetLevel}</b><br>
+            最多提交 <b>${plan.levels}</b> 次 · 最多消耗 <b>${totalCost.toLocaleString()}</b> 点
           </div>
           <div class="stch-order-list"></div>
           <div class="stch-order-note">
@@ -2398,7 +2154,7 @@
       const row = document.createElement("div");
       row.className = "stch-order-item";
       row.appendChild(createTextSpan("", info.name));
-      row.appendChild(createTextSpan("", `${plan.levels} 级`));
+      row.appendChild(createTextSpan("", `Lv1-Lv${plan.targetLevel}`));
       row.appendChild(createTextSpan("", `${totalCost.toLocaleString()} 点`));
       list.appendChild(row);
 
@@ -2428,8 +2184,7 @@
       {
         defid: Number(info.defid),
         num_levels: requestedLevels,
-      },
-      { auth: true }
+      }
     );
     return data;
   }
@@ -2447,7 +2202,7 @@
 
     const plan = getSeasonalPlan();
     if (plan.levels <= 0) {
-      seasonalLog("目标等级需要高于当前等级", "warn");
+      seasonalLog("目标等级至少为 1", "warn");
       updateSeasonalSummary();
       return;
     }
@@ -2457,14 +2212,14 @@
     updateSeasonalActionState();
     updateBulkActionState();
     updateCraftActionState();
-    setSeasonalStatus(`读取 ${SEASONAL_BADGE_FALLBACK_NAME}`);
+    setSeasonalStatus("读取 Steam 点数商店");
 
     let completed = 0;
+    let skipped = 0;
     let failed = false;
     let cancelled = false;
     try {
-      const info = await resolveSeasonalBadgeInfo();
-      state.seasonalInfo = info;
+      const info = await getSeasonalBadgeInfo();
       updateSeasonalSummary();
       const confirmed = await showSeasonalConfirmation(info, plan);
       if (!confirmed) {
@@ -2474,38 +2229,29 @@
 
       setSeasonalProgress(0, plan.levels, `准备购买 0/${plan.levels} 级`);
       seasonalLog(
-        `${info.name}: 开始${plan.mode === "max" ? "一次买满" : "逐级购买"}，Lv${plan.currentLevel} → Lv${plan.targetLevel}`,
+        `${info.name}: 开始从 Lv1 试到 Lv${plan.targetLevel}`,
         "info"
       );
 
-      if (plan.mode === "max") {
-        setSeasonalStatus(`购买 ${info.name} ${plan.levels} 级`);
-        await redeemSeasonalBadgeLevels(info, plan.levels);
-        completed = plan.levels;
-        setSeasonalProgress(completed, plan.levels, `已购买 ${completed}/${plan.levels} 级`);
-        seasonalLog(
-          `✓ ${info.name}: 已提交一次买满 ${plan.levels} 级`,
-          "ok"
-        );
-      } else {
-        for (let index = 0; index < plan.levels; index++) {
-          if (state.seasonalStopRequested) break;
-          setSeasonalStatus(`购买 ${info.name} ${index + 1}/${plan.levels}`);
-          await redeemSeasonalBadgeLevels(info, 1);
+      for (let level = 1; level <= plan.targetLevel; level++) {
+        if (state.seasonalStopRequested) break;
+        setSeasonalStatus(`尝试 ${info.name} Lv${level}/${plan.targetLevel}`);
+        try {
+          await redeemSeasonalBadgeLevels(info, level);
           completed++;
-          state.cfg.seasonalCurrentLevel = Math.min(
-            SEASONAL_BADGE_MAX_LEVEL,
-            plan.currentLevel + completed
-          );
-          saveConfig(state.cfg);
-          setSeasonalProgress(completed, plan.levels, `已购买 ${completed}/${plan.levels} 级`);
+          setSeasonalProgress(level, plan.levels, `已尝试 ${level}/${plan.levels} 级`);
           seasonalLog(
-            `✓ ${info.name}: 已购买 1 级，当前按 Lv${state.cfg.seasonalCurrentLevel} 记录`,
+            `✓ ${info.name}: Lv${level} 提交成功`,
             "ok"
           );
-          if (completed < plan.levels && !state.seasonalStopRequested) {
-            await sleepMs(plan.interval);
-          }
+        } catch (error) {
+          if (error?.status === 429 || error?.uncertain) throw error;
+          skipped++;
+          setSeasonalProgress(level, plan.levels, `已尝试 ${level}/${plan.levels} 级`);
+          seasonalLog(`Lv${level} 跳过: ${error?.message || error}`, "warn");
+        }
+        if (level < plan.targetLevel && !state.seasonalStopRequested) {
+          await sleepMs(plan.interval);
         }
       }
     } catch (error) {
@@ -2524,19 +2270,12 @@
         seasonalLog(`购买失败: ${error?.message || error}`, "err");
       }
     } finally {
-      if (completed > 0 && plan.mode === "max") {
-        state.cfg.seasonalCurrentLevel = Math.min(
-          SEASONAL_BADGE_MAX_LEVEL,
-          plan.currentLevel + completed
-        );
-        saveConfig(state.cfg);
-      }
       if (state.seasonalStopRequested && !failed) {
         seasonalLog("已按请求停止后续购买", "warn");
       }
       if (!cancelled) {
         seasonalLog(
-          `季节徽章购买结束：成功 ${completed}/${plan.levels} 级`,
+          `季节徽章购买结束：成功 ${completed}，跳过 ${skipped}`,
           failed || state.seasonalStopRequested ? "warn" : "ok"
         );
       }
