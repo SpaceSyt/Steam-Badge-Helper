@@ -2,7 +2,7 @@
 // @name         Steam Trading Card Helper
 // @name:zh-CN   Steam 卡牌助手
 // @namespace    https://github.com/SpaceSyt/Steam-Trading-Card-Helper
-// @version      1.6.0
+// @version      1.6.1
 // @description  Scan card prices, estimate badge costs, streamline purchases, craft badges, buy seasonal badge levels, and find surplus cards
 // @description:zh-CN 扫描卡牌价格、估算徽章成本、辅助批量购买、自动合成徽章、购买季节徽章等级并检测多余卡牌
 // @author       SpaceSyt
@@ -42,7 +42,7 @@
   // Constants
   // ============================================================
   const DEFAULT_CONFIG = {
-    configVersion: 8,
+    configVersion: 9,
     threshold: 5,
     scanInterval: 0,
     requestInterval: 330,
@@ -138,6 +138,13 @@
     return span;
   }
 
+  function createCheckboxHit(checkbox) {
+    const hit = document.createElement("span");
+    hit.className = "stch-check-hit";
+    hit.appendChild(checkbox);
+    return hit;
+  }
+
   // ============================================================
   // Request Queue
   // ============================================================
@@ -172,6 +179,28 @@
         this.queue.push({ url, options, resolve, reject });
         this._run();
       });
+    }
+
+    _cfgNumber(key, fallback, min = 0) {
+      const value = Number(this.state?.cfg?.[key]);
+      if (!Number.isFinite(value)) return fallback;
+      return Math.max(min, value);
+    }
+
+    _priceInterval() {
+      return this._cfgNumber("requestInterval", this.interval, 0);
+    }
+
+    _otherRequestInterval() {
+      return this._cfgNumber("scanInterval", this.otherInterval, 0);
+    }
+
+    _batchSizeLimit() {
+      return Math.max(1, Math.floor(this._cfgNumber("batchSize", this.batchSize, 1)));
+    }
+
+    _batchPauseMs() {
+      return this._cfgNumber("batchPause", this.batchPause, 0);
     }
 
     async _sleep(ms) {
@@ -209,7 +238,7 @@
             if (res.status === 429) {
               this._consecutive429++;
               this._reqCount = 0;
-              const pauseMs = this.batchPause;
+              const pauseMs = this._batchPauseMs();
               if (this.onStatus) this.onStatus(`限流冷却中 (第${this._consecutive429}次, ${(pauseMs/1000).toFixed(0)}s)`, true);
               if (this._consecutive429 >= 3 && !this._429Warned && this.onLog) {
                 this._429Warned = true;
@@ -233,7 +262,7 @@
             }
 
             if (res.status >= 500) {
-              await this._sleep(this.interval * 3);
+              await this._sleep(this._priceInterval() * 3);
             }
 
             const text = await res.text();
@@ -252,17 +281,18 @@
           // Only priceoverview calls count toward the proactive market API cooldown.
           if (isPriceOverview) {
             this._reqCount++;
-            if (this._reqCount >= this.batchSize) {
+            if (this._reqCount >= this._batchSizeLimit()) {
               this._reqCount = 0;
-              if (this.onStatus) this.onStatus(`主动冷却中 (${(this.batchPause/1000).toFixed(0)}s)`, true);
-              await this._sleep(this.batchPause);
+              const pauseMs = this._batchPauseMs();
+              if (this.onStatus) this.onStatus(`主动冷却中 (${(pauseMs/1000).toFixed(0)}s)`, true);
+              await this._sleep(pauseMs);
               continue;
             }
           }
 
           const targetInterval = isPriceOverview
-            ? this.interval
-            : this.otherInterval;
+            ? this._priceInterval()
+            : this._otherRequestInterval();
           const elapsed = Date.now() - requestStartedAt;
           await this._sleep(Math.max(0, targetInterval - elapsed));
         }
@@ -856,12 +886,35 @@
       width: 24px;
       flex-shrink: 0;
       text-align: center;
+      position: relative;
+      align-self: stretch;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: visible;
     }
     .stch-game-list:not(.stch-show-drops) .stch-drops { display: none; }
     .stch-result-cb {
       margin: 0;
       cursor: pointer;
       accent-color: #75b022;
+    }
+    .stch-check-hit {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 36px;
+      height: 32px;
+      transform: translate(-50%, -50%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      z-index: 1;
+    }
+    .stch-check-hit .stch-result-cb {
+      position: relative;
+      z-index: 2;
     }
     .stch-craft-list {
       flex: 1;
@@ -1358,12 +1411,18 @@
   };
 
   function openModal() {
-    if (modalEl) { modalEl.style.display = ""; return; }
+    if (modalEl) {
+      modalEl.style.display = "";
+      const backdrop = document.getElementById("stch-backdrop");
+      if (backdrop) backdrop.style.display = "block";
+      return;
+    }
     buildModal();
   }
 
   function buildModal() {
-    const initialTab = isPointsShopPage() ? "seasonal" : "scan";
+    const seasonalOnly = isPointsShopPage();
+    const initialTab = seasonalOnly ? "seasonal" : "scan";
     const activeClass = tabName => initialTab === tabName ? "active" : "";
     const backdrop = document.createElement("div");
     backdrop.id = "stch-backdrop";
@@ -1381,13 +1440,16 @@
       </div>
       <div class="stch-body">
         <div class="stch-tabs">
+          ${seasonalOnly ? `
+          <span class="stch-tab ${activeClass("seasonal")}" data-tab="seasonal">季节徽章</span>
+          ` : `
           <span class="stch-tab ${activeClass("scan")}" data-tab="scan">价格扫描</span>
           <span class="stch-tab stch-tab-disabled" title="未实现">闪卡价格扫描</span>
           <span class="stch-tab" data-tab="craft">徽章合成</span>
-          <span class="stch-tab ${activeClass("seasonal")}" data-tab="seasonal">季节徽章</span>
           <span class="stch-tab" data-tab="blacklist">黑名单</span>
           <span class="stch-tab" data-tab="surplus">多余卡牌检测</span>
           <span class="stch-tab stch-tab-right" data-tab="settings">设置</span>
+          `}
         </div>
         <div class="stch-tab-content ${activeClass("scan")}" id="stch-tab-scan">
           <div class="stch-onboarding" id="stch-onboarding" style="display:none">
@@ -1589,7 +1651,7 @@
         </div>
       </div>
       <div class="stch-footer">
-        <span class="stch-label">V1.6.0 · 默认货币：人民币(CNY)</span>
+        <span class="stch-label">V1.6.1 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -1597,6 +1659,78 @@
 
     modal.querySelector(".stch-close").addEventListener("click", closeModal);
 
+    const readNumberInput = (id, fallback, options = {}) => {
+      const raw = document.getElementById(id)?.value;
+      let value = options.integer ? parseInt(raw, 10) : parseFloat(raw);
+      if (!Number.isFinite(value)) return fallback;
+      if (options.integer) value = Math.floor(value);
+      if (Number.isFinite(options.min)) value = Math.max(options.min, value);
+      if (Number.isFinite(options.max)) value = Math.min(options.max, value);
+      return value;
+    };
+    const syncConfigFromInputs = changedId => {
+      state.cfg.threshold = readNumberInput(
+        "stch-threshold",
+        state.cfg.threshold ?? DEFAULT_CONFIG.threshold,
+        { min: 0 }
+      );
+      state.cfg.scanInterval = readNumberInput(
+        "stch-scan-interval",
+        state.cfg.scanInterval ?? DEFAULT_CONFIG.scanInterval,
+        { integer: true, min: 0 }
+      );
+      state.cfg.requestInterval = readNumberInput(
+        "stch-req-interval",
+        state.cfg.requestInterval ?? DEFAULT_CONFIG.requestInterval,
+        { integer: true, min: 0 }
+      );
+      state.cfg.maxBadgePages = readNumberInput(
+        "stch-max-pages",
+        state.cfg.maxBadgePages ?? DEFAULT_CONFIG.maxBadgePages,
+        { integer: true, min: 1 }
+      );
+      state.cfg.includeDrops = !!document.getElementById("stch-include-drops")?.checked;
+      state.cfg.batchSize = readNumberInput(
+        "stch-batch-size",
+        state.cfg.batchSize ?? DEFAULT_CONFIG.batchSize,
+        { integer: true, min: 1 }
+      );
+      state.cfg.batchPause = readNumberInput(
+        "stch-batch-pause",
+        state.cfg.batchPause ?? DEFAULT_CONFIG.batchPause,
+        { integer: true, min: 0 }
+      );
+      state.cfg.buyMode = document.getElementById("stch-buy-mode")?.value || state.cfg.buyMode;
+      state.cfg.orderPriceSource = document.getElementById("stch-order-price-source")?.value
+        || state.cfg.orderPriceSource;
+      state.cfg.priceAdjustment = readNumberInput(
+        "stch-price-adjustment",
+        state.cfg.priceAdjustment ?? DEFAULT_CONFIG.priceAdjustment
+      );
+      state.cfg.earlyPricePrediction = !!document.getElementById("stch-early-price-prediction")?.checked;
+      state.cfg.surplusOnlyMaxed = !!document.getElementById("stch-surplus-only-maxed")?.checked;
+      state.cfg.craftInterval = readNumberInput(
+        "stch-craft-interval",
+        state.cfg.craftInterval ?? DEFAULT_CONFIG.craftInterval,
+        { integer: true, min: 200 }
+      );
+      state.cfg.craftMode = document.getElementById("stch-craft-mode")?.value || state.cfg.craftMode;
+      state.cfg.seasonalTargetLevel = readNumberInput(
+        "stch-seasonal-target",
+        state.cfg.seasonalTargetLevel ?? DEFAULT_CONFIG.seasonalTargetLevel,
+        { integer: true, min: 1, max: SEASONAL_BADGE_MAX_LEVEL }
+      );
+      saveConfig(state.cfg);
+      const craftMaxPages = document.getElementById("stch-craft-max-pages");
+      if (craftMaxPages) craftMaxPages.value = String(state.cfg.maxBadgePages);
+      updateResultColumns();
+      if (changedId === "stch-craft-mode") renderCraftResults();
+      if (changedId === "stch-surplus-only-maxed") renderSurplusResults();
+      if (changedId?.startsWith("stch-seasonal-")) {
+        normalizeSeasonalInputs();
+        updateSeasonalSummary();
+      }
+    };
     const cfgIds = ["stch-threshold", "stch-scan-interval",
       "stch-req-interval", "stch-max-pages", "stch-include-drops",
       "stch-batch-size", "stch-batch-pause", "stch-buy-mode",
@@ -1607,50 +1741,8 @@
     cfgIds.forEach(id => {
       const el = document.getElementById(id);
       if (!el) return;
-      el.addEventListener("change", () => {
-        state.cfg.threshold = parseFloat(document.getElementById("stch-threshold").value) || 0;
-        state.cfg.scanInterval = parseInt(document.getElementById("stch-scan-interval").value, 10) || 0;
-        state.cfg.requestInterval = parseInt(document.getElementById("stch-req-interval").value, 10) || DEFAULT_CONFIG.requestInterval;
-        state.cfg.maxBadgePages = parseInt(document.getElementById("stch-max-pages").value, 10) || DEFAULT_CONFIG.maxBadgePages;
-        state.cfg.includeDrops = document.getElementById("stch-include-drops").checked;
-        state.cfg.batchSize = parseInt(document.getElementById("stch-batch-size").value, 10) || DEFAULT_CONFIG.batchSize;
-        state.cfg.batchPause = parseInt(document.getElementById("stch-batch-pause").value, 10) || DEFAULT_CONFIG.batchPause;
-        state.cfg.buyMode = document.getElementById("stch-buy-mode").value;
-        state.cfg.orderPriceSource = document.getElementById("stch-order-price-source").value;
-        const adjustment = parseFloat(document.getElementById("stch-price-adjustment").value);
-        state.cfg.priceAdjustment = Number.isFinite(adjustment) ? adjustment : 0;
-        state.cfg.earlyPricePrediction = document.getElementById("stch-early-price-prediction").checked;
-        state.cfg.surplusOnlyMaxed = document.getElementById("stch-surplus-only-maxed").checked;
-        state.cfg.craftInterval = Math.max(
-          200,
-          parseInt(document.getElementById("stch-craft-interval").value, 10)
-            || DEFAULT_CONFIG.craftInterval
-        );
-        state.cfg.craftMode = document.getElementById("stch-craft-mode").value;
-        state.cfg.seasonalTargetLevel = Math.max(
-          1,
-          Math.min(
-            SEASONAL_BADGE_MAX_LEVEL,
-            parseInt(document.getElementById("stch-seasonal-target").value, 10)
-              || DEFAULT_CONFIG.seasonalTargetLevel
-          )
-        );
-        saveConfig(state.cfg);
-        const craftMaxPages = document.getElementById("stch-craft-max-pages");
-        if (craftMaxPages) craftMaxPages.value = String(state.cfg.maxBadgePages);
-        updateResultColumns();
-        if (id === "stch-craft-mode") renderCraftResults();
-        if (id === "stch-surplus-only-maxed") renderSurplusResults();
-        if (id.startsWith("stch-seasonal-")) {
-          normalizeSeasonalInputs();
-          updateSeasonalSummary();
-        }
-      });
-    });
-    document.getElementById("stch-price-adjustment").addEventListener("input", event => {
-      const adjustment = parseFloat(event.target.value);
-      state.cfg.priceAdjustment = Number.isFinite(adjustment) ? adjustment : 0;
-      saveConfig(state.cfg);
+      el.addEventListener("input", () => syncConfigFromInputs(id));
+      el.addEventListener("change", () => syncConfigFromInputs(id));
     });
 
     const activateTab = tabName => {
@@ -1697,7 +1789,7 @@
     document.getElementById("stch-seasonal-stop-btn").addEventListener("click", requestSeasonalStop);
     document.getElementById("stch-surplus-scan-btn").addEventListener("click", startSurplusScan);
     document.getElementById("stch-surplus-stop-btn").addEventListener("click", requestSurplusStop);
-    document.getElementById("stch-craft-max-pages").addEventListener("change", event => {
+    const syncCraftMaxPages = event => {
       state.cfg.maxBadgePages = Math.max(
         1,
         parseInt(event.target.value, 10) || DEFAULT_CONFIG.maxBadgePages
@@ -1705,13 +1797,18 @@
       const scanMaxPages = document.getElementById("stch-max-pages");
       if (scanMaxPages) scanMaxPages.value = String(state.cfg.maxBadgePages);
       saveConfig(state.cfg);
-    });
+    };
+    const craftMaxPagesInput = document.getElementById("stch-craft-max-pages");
+    craftMaxPagesInput.addEventListener("input", syncCraftMaxPages);
+    craftMaxPagesInput.addEventListener("change", syncCraftMaxPages);
 
     // Auto blacklist threshold
-    document.getElementById("stch-auto-bl-threshold").addEventListener("change", () => {
+    const syncAutoBlacklistThreshold = () => {
       state.cfg.autoBlackThreshold = parseFloat(document.getElementById("stch-auto-bl-threshold").value) || 0;
       saveConfig(state.cfg);
-    });
+    };
+    document.getElementById("stch-auto-bl-threshold").addEventListener("input", syncAutoBlacklistThreshold);
+    document.getElementById("stch-auto-bl-threshold").addEventListener("change", syncAutoBlacklistThreshold);
     document.getElementById("stch-auto-bl-enabled").addEventListener("change", () => {
       state.cfg.autoBlackEnabled = document.getElementById("stch-auto-bl-enabled").checked;
       saveConfig(state.cfg);
@@ -1864,34 +1961,9 @@
   }
 
   function closeModal() {
-    if (
-      state.bulkActionRunning
-      || state.craftActionRunning
-      || state.seasonalActionRunning
-    ) return;
-    if (state.scanning) {
-      state.stopRequested = true;
-      state.queue?.stop();
-    }
-    if (state.craftScanning) {
-      state.craftStopRequested = true;
-      state.craftQueue?.stop();
-    }
-    if (state.seasonalActionRunning) {
-      state.seasonalStopRequested = true;
-    }
-    if (state.surplusScanning) {
-      state.surplusStopRequested = true;
-      state.surplusQueue?.stop();
-    }
-    if (_stopTimeout) {
-      clearTimeout(_stopTimeout);
-      _stopTimeout = null;
-    }
-    setStatus(null);
-    document.getElementById("stch-backdrop")?.remove();
-    modalEl?.remove();
-    modalEl = null;
+    const backdrop = document.getElementById("stch-backdrop");
+    if (backdrop) backdrop.style.display = "none";
+    if (modalEl) modalEl.style.display = "none";
   }
 
   // ============================================================
@@ -2582,7 +2654,7 @@
       <span class="stch-craft-count">本次</span>
       <span class="stch-craft-target">目标</span>
       <span class="stch-craft-status">状态</span>
-      <span class="stch-check"><input class="stch-result-cb" id="stch-craft-select-all" type="checkbox" title="全选"></span>
+      <span class="stch-check"><span class="stch-check-hit"><input class="stch-result-cb" id="stch-craft-select-all" type="checkbox" title="全选"></span></span>
     `;
     list.appendChild(header);
 
@@ -2594,15 +2666,25 @@
       || state.craftActionRunning
       || state.seasonalActionRunning
       || state.surplusScanning;
-    selectAll.addEventListener("change", event => {
+    const applyCraftSelectAll = checked => {
       state.craftResults.forEach(result => {
         if (result.maxCraftable <= 0) return;
-        result.selected = event.target.checked;
-        if (event.target.checked && result.craftCount <= 0) {
+        result.selected = checked;
+        if (checked && result.craftCount <= 0) {
           result.craftCount = result.maxCraftable;
         }
       });
       renderCraftResults();
+    };
+    selectAll.addEventListener("change", event => {
+      event.stopPropagation();
+      applyCraftSelectAll(event.target.checked);
+    });
+    selectAll.closest(".stch-check").addEventListener("click", event => {
+      event.stopPropagation();
+      if (event.target === selectAll || selectAll.disabled) return;
+      selectAll.checked = !selectAll.checked;
+      applyCraftSelectAll(selectAll.checked);
     });
 
     state.craftResults.forEach(result => {
@@ -2664,10 +2746,10 @@
         || state.seasonalActionRunning
         || state.surplusScanning
         || result.maxCraftable <= 0;
-      checkCell.appendChild(checkbox);
+      checkCell.appendChild(createCheckboxHit(checkbox));
 
-      checkbox.addEventListener("change", () => {
-        result.selected = checkbox.checked;
+      const applyCraftChecked = checked => {
+        result.selected = checked;
         if (result.selected && result.craftCount <= 0) {
           result.craftCount = result.maxCraftable;
           countInput.value = String(result.craftCount);
@@ -2675,6 +2757,16 @@
         }
         updateCraftSummary();
         updateCraftActionState();
+      };
+      checkbox.addEventListener("change", event => {
+        event.stopPropagation();
+        applyCraftChecked(checkbox.checked);
+      });
+      checkCell.addEventListener("click", event => {
+        event.stopPropagation();
+        if (event.target === checkbox || checkbox.disabled) return;
+        checkbox.checked = !checkbox.checked;
+        applyCraftChecked(checkbox.checked);
       });
 
       countInput.addEventListener("input", () => {
@@ -2760,7 +2852,7 @@
       cfg.requestInterval,
       cfg.batchSize,
       cfg.batchPause,
-      null,
+      state,
       null,
       craftLog,
       cfg.scanInterval
@@ -4098,7 +4190,7 @@
 
       let processed = 0;
       let skipped = 0;
-      const thresholdCents = Math.round(cfg.threshold * 100);
+      const getThresholdCents = () => Math.round((Number(state.cfg.threshold) || 0) * 100);
 
       for (const b of badges) {
         if (state.stopRequested) { log("已手动停止", "warn"); break; }
@@ -4164,7 +4256,7 @@
             continue;
           }
 
-          if (!cfg.includeDrops && info.dropsRemaining > 0) {
+          if (!state.cfg.includeDrops && info.dropsRemaining > 0) {
             log(`[${b.appid}] ${info.gameName}: 还有 ${info.dropsRemaining} 张掉落，跳过 (可勾选"包含有掉落"来扫描)`, "info");
             skipped++;
             continue;
@@ -4242,20 +4334,20 @@
               ? pk.lowestSellCents + (need5 - 1) * Math.max(pk.lowestSellCents, pk.medianCents)
               : 0;
 
-            if (fullSetCostCents > thresholdCents) {
-              log(`  → 已查${info.cardPrices.length}/${info.totalInSet}张, 全套 ¥${formatCNY(fullSetCostCents)} > ¥${cfg.threshold}，跳过`, "info");
+            if (fullSetCostCents > getThresholdCents()) {
+              log(`  → 已查${info.cardPrices.length}/${info.totalInSet}张, 全套 ¥${formatCNY(fullSetCostCents)} > ¥${formatCNY(getThresholdCents())}，跳过`, "info");
               allPriced = false;
               thresholdSkip = true;
               break;
             }
 
-            if (cfg.earlyPricePrediction) {
+            if (state.cfg.earlyPricePrediction) {
               const prediction = predictFullSetLowerBound(
                 info.cardPrices,
                 info.totalInSet,
                 fullSetCostCents
               );
-              const predictionLimit = Math.ceil(thresholdCents * EARLY_PREDICTION_MARGIN);
+              const predictionLimit = Math.ceil(getThresholdCents() * EARLY_PREDICTION_MARGIN);
               if (prediction && prediction.predictedCents > predictionLimit) {
                 log(
                   `  → 已查${prediction.sampleCount}/${info.totalInSet}张, ` +
@@ -4340,8 +4432,8 @@
             continue;
           }
 
-          if (fullSetCostCents > thresholdCents) {
-            log(`  → 整套卡牌价格已大于上限(¥${info.fullSetCNY} > ¥${cfg.threshold})，跳过`, "info");
+          if (fullSetCostCents > getThresholdCents()) {
+            log(`  → 整套卡牌价格已大于上限(¥${info.fullSetCNY} > ¥${formatCNY(getThresholdCents())})，跳过`, "info");
             skipped++;
             continue;
           }
@@ -4407,19 +4499,30 @@
       <span class="stch-lv5 stch-sortable" data-sort="lv5">满级估算 <span class="stch-sort-arrow">${sortArrow("lv5")}</span><span style="cursor:help;color:#8f98a0;font-size:11px;" title="绿色:近期成交>1，参考性较强&#10;灰色:近期成交=1，参考性不强&#10;红色:近期成交=0，参考性较弱&#10;黄色:Steam返回信息不全，采用 median_price 或公式估算，结果可能偏低">?</span></span>
       <span class="stch-drops stch-sortable" data-sort="drops">掉落<span class="stch-sort-arrow">${sortArrow("drops")}</span></span>
       <span class="stch-buy">手动购买</span>
-      <span class="stch-check"><input id="stch-result-select-all" class="stch-result-cb" type="checkbox" title="全选"></span>
+      <span class="stch-check"><span class="stch-check-hit"><input id="stch-result-select-all" class="stch-result-cb" type="checkbox" title="全选"></span></span>
     `;
     hdr.querySelectorAll(".stch-sortable").forEach(sp => {
       sp.addEventListener("click", () => sortAndRender(sp.dataset.sort));
     });
-    hdr.querySelector("#stch-result-select-all").addEventListener("click", e => {
-      e.stopPropagation();
-      if (e.target.checked) {
+    const selectAll = hdr.querySelector("#stch-result-select-all");
+    const selectAllCell = selectAll.closest(".stch-check");
+    const applySelectAll = checked => {
+      if (checked) {
         state.results.forEach(info => state.selectedResults.add(getResultKey(info)));
       } else {
         state.selectedResults.clear();
       }
       renderResults();
+    };
+    selectAll.addEventListener("click", e => {
+      e.stopPropagation();
+      applySelectAll(selectAll.checked);
+    });
+    selectAllCell.addEventListener("click", e => {
+      e.stopPropagation();
+      if (e.target === selectAll) return;
+      selectAll.checked = !selectAll.checked;
+      applySelectAll(selectAll.checked);
     });
     list.appendChild(hdr);
   }
@@ -4535,25 +4638,34 @@
     row.appendChild(buyCell);
     const checkboxCell = document.createElement("span");
     checkboxCell.className = "stch-check";
-    checkboxCell.appendChild(checkbox);
+    checkboxCell.appendChild(createCheckboxHit(checkbox));
     row.appendChild(checkboxCell);
 
     buyLink.addEventListener("click", (e) => {
       e.stopPropagation();
       openMultibuy(info);
     });
-    checkbox.addEventListener("click", e => {
-      e.stopPropagation();
+    const applyChecked = checked => {
       const key = getResultKey(info);
-      if (checkbox.checked) {
+      if (checked) {
         state.selectedResults.add(key);
       } else {
         state.selectedResults.delete(key);
       }
       updateBulkActionState();
+    };
+    checkbox.addEventListener("click", e => {
+      e.stopPropagation();
+      applyChecked(checkbox.checked);
+    });
+    checkboxCell.addEventListener("click", e => {
+      e.stopPropagation();
+      if (e.target === checkbox) return;
+      checkbox.checked = !checkbox.checked;
+      applyChecked(checkbox.checked);
     });
     row.addEventListener("click", (e) => {
-      if (e.target.closest(".stch-buy-link, .stch-result-cb")) return;
+      if (e.target.closest(".stch-buy-link, .stch-result-cb, .stch-check, .stch-check-hit")) return;
       const pUrl = getProfileUrl();
       if (pUrl) window.open(`${pUrl}/gamecards/${info.appid}/`, "_blank");
     });

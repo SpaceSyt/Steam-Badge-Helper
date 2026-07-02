@@ -2,7 +2,7 @@
 
 Steam 卡牌助手是一款 Tampermonkey 用户脚本，用于扫描未完成的 Steam 徽章、批量查询卡牌价格、估算升级成本、辅助购买，并自动合成已经收集齐全的徽章。
 
-> **v1.6.0**：新增多余卡牌检测，按库存卡牌读取对应徽章，计算升满后仍会剩余的卡牌并显示可出售/可交易数量与资产 ID。
+> **v1.6.1**：QoL 更新：关闭脚本面板会保留当前页会话中的扫描状态和结果；扫描延时、价格阈值等设置可在运行中同步到后续请求；季节徽章页签仅在 Steam 点数商店显示；列表复选框保留视觉大小但扩大点击范围。
 
 ## 功能
 
@@ -30,7 +30,7 @@ Steam 卡牌助手是一款 Tampermonkey 用户脚本，用于扫描未完成的
    <https://raw.githubusercontent.com/SpaceSyt/Steam-Trading-Card-Helper/master/steam-trading-card-helper.user.js>
 
 3. 打开任意 Steam 徽章页，例如 `steamcommunity.com/id/xxx/badges/`。
-4. 点击页面中的 **Steam Trading Card Helper** 按钮。季节徽章也可以从 Steam 点数商店页面余额下方的入口打开。
+4. 点击页面中的 **Steam Trading Card Helper** 按钮。季节徽章请从 Steam 点数商店页面余额下方的入口打开。
 
 新用户首次打开会看到一页精简说明。关闭后不会再次自动显示，可在设置页选择 **重新查看使用说明**。
 
@@ -55,7 +55,7 @@ Steam 卡牌助手是一款 Tampermonkey 用户脚本，用于扫描未完成的
 
 ## 季节徽章
 
-1. 从徽章页或 Steam 点数商店页面打开脚本，进入 **季节徽章** 页签。
+1. 从 Steam 点数商店页面打开脚本，进入 **季节徽章** 页签。
 2. 填写目标等级。
 3. 点击 **开始购买**，检查确认窗口后提交。
 
