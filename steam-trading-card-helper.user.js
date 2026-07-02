@@ -2,7 +2,7 @@
 // @name         Steam Trading Card Helper
 // @name:zh-CN   Steam 卡牌助手
 // @namespace    https://github.com/SpaceSyt/Steam-Trading-Card-Helper
-// @version      1.6.1
+// @version      1.6.5
 // @description  Scan card prices, estimate badge costs, streamline purchases, craft badges, buy seasonal badge levels, and find surplus cards
 // @description:zh-CN 扫描卡牌价格、估算徽章成本、辅助批量购买、自动合成徽章、购买季节徽章等级并检测多余卡牌
 // @author       SpaceSyt
@@ -73,6 +73,9 @@
   const SEASONAL_BADGE_MAX_LEVEL = 40;
   const SEASONAL_BADGE_DEFAULT_COST = 1000;
   const SEASONAL_POINTS_SHOP_URL = "https://store.steampowered.com/points/shop/c/steambadge";
+  const SIDEBAR_PINNED_KEY = "stch_sidebar_pinned";
+  const SIDEBAR_GEM_SACK_HASH = "753-Sack of Gems";
+  const GEM_SACK_SIZE = 1000;
 
   // ============================================================
   // Config
@@ -203,19 +206,43 @@
       return this._cfgNumber("batchPause", this.batchPause, 0);
     }
 
+    _sleepShouldStop() {
+      return this.stopped
+        || this.state?.stopRequested
+        || this.state?.skipCurrent
+        || this.state?.craftStopRequested
+        || this.state?.surplusStopRequested
+        || this.state?.seasonalStopRequested;
+    }
+
     async _sleep(ms) {
       const endAt = Date.now() + Math.max(0, ms);
       while (Date.now() < endAt) {
-        if (
-          this.stopped
-          || this.state?.stopRequested
-          || this.state?.skipCurrent
-          || this.state?.surplusStopRequested
-        ) {
+        if (this._sleepShouldStop()) {
           return false;
         }
         await new Promise(resolve =>
           setTimeout(resolve, Math.min(250, endAt - Date.now()))
+        );
+      }
+      return true;
+    }
+
+    async _sleepWithCountdown(ms, labelFactory) {
+      const endAt = Date.now() + Math.max(0, ms);
+      let lastSeconds = null;
+      while (Date.now() < endAt) {
+        if (this._sleepShouldStop()) {
+          return false;
+        }
+        const remainingMs = Math.max(0, endAt - Date.now());
+        const seconds = Math.max(1, Math.ceil(remainingMs / 1000));
+        if (seconds !== lastSeconds && this.onStatus) {
+          lastSeconds = seconds;
+          this.onStatus(labelFactory(seconds), false);
+        }
+        await new Promise(resolve =>
+          setTimeout(resolve, Math.min(250, remainingMs))
         );
       }
       return true;
@@ -239,12 +266,14 @@
               this._consecutive429++;
               this._reqCount = 0;
               const pauseMs = this._batchPauseMs();
-              if (this.onStatus) this.onStatus(`限流冷却中 (第${this._consecutive429}次, ${(pauseMs/1000).toFixed(0)}s)`, true);
               if (this._consecutive429 >= 3 && !this._429Warned && this.onLog) {
                 this._429Warned = true;
                 this.onLog("Steam 可能已临时限制此 IP 访问价格 API；建议等待至少半小时或者更换 IP 后再继续", "warn-ip");
               }
-              await this._sleep(pauseMs);
+              await this._sleepWithCountdown(
+                pauseMs,
+                seconds => `429 限流冷却中 (第${this._consecutive429}次, ${seconds}s)`
+              );
               if (this.state?.skipCurrent) {
                 job.reject({ status: 429, error: "skipped by user" });
                 continue;
@@ -284,8 +313,10 @@
             if (this._reqCount >= this._batchSizeLimit()) {
               this._reqCount = 0;
               const pauseMs = this._batchPauseMs();
-              if (this.onStatus) this.onStatus(`主动冷却中 (${(pauseMs/1000).toFixed(0)}s)`, true);
-              await this._sleep(pauseMs);
+              await this._sleepWithCountdown(
+                pauseMs,
+                seconds => `主动冷却中 (${seconds}s)`
+              );
               continue;
             }
           }
@@ -697,6 +728,169 @@
     }
     .stch-store-entry-wrap .stch-btn-entry {
       margin-left: 0;
+    }
+
+    #stch-sidebar {
+      position: fixed;
+      left: 0;
+      top: 122px;
+      width: 304px;
+      max-height: calc(100vh - 170px);
+      min-height: 360px;
+      transform: translateX(-272px);
+      transition: transform 160ms ease;
+      z-index: 10002;
+      color: #c7d5e0;
+      font-family: "Motiva Sans", Arial, sans-serif;
+      font-size: 13px;
+      filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.45));
+    }
+    #stch-sidebar:hover,
+    #stch-sidebar.pinned {
+      transform: translateX(0);
+    }
+    .stch-sidebar-panel {
+      width: 272px;
+      min-height: 360px;
+      max-height: calc(100vh - 170px);
+      overflow: hidden;
+      background: #172435;
+      border: 1px solid #31445b;
+      border-left: 0;
+      border-radius: 0 4px 4px 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .stch-sidebar-handle {
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 32px;
+      height: 100%;
+      background: linear-gradient(180deg, #25445d, #1a2d40);
+      border: 1px solid #3f617b;
+      border-left: 0;
+      border-radius: 0 5px 5px 0;
+      color: #66c0f4;
+      cursor: pointer;
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      letter-spacing: 0;
+      user-select: none;
+      font-weight: bold;
+    }
+    .stch-sidebar-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px;
+      background: #202f43;
+      border-bottom: 1px solid #31445b;
+    }
+    .stch-sidebar-avatar {
+      width: 46px;
+      height: 46px;
+      object-fit: cover;
+      border: 1px solid #66c0f4;
+      background: #0b141f;
+      flex-shrink: 0;
+    }
+    .stch-sidebar-name {
+      color: #fff;
+      font-size: 15px;
+      font-weight: bold;
+      line-height: 1.25;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .stch-sidebar-sub {
+      color: #8f98a0;
+      margin-top: 3px;
+      font-size: 12px;
+    }
+    .stch-sidebar-pin {
+      margin-left: auto;
+      background: #0e1621;
+      border: 1px solid #45556b;
+      color: #c7d5e0;
+      border-radius: 2px;
+      padding: 4px 7px;
+      cursor: pointer;
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+    .stch-sidebar-pin:hover,
+    #stch-sidebar.pinned .stch-sidebar-pin {
+      color: #fff;
+      border-color: #66c0f4;
+    }
+    .stch-sidebar-body {
+      padding: 10px 12px 12px;
+      overflow-y: auto;
+      min-height: 0;
+    }
+    .stch-sidebar-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 7px 0;
+      border-bottom: 1px solid rgba(69, 85, 107, 0.55);
+    }
+    .stch-sidebar-row:last-child {
+      border-bottom: 0;
+    }
+    .stch-sidebar-key {
+      color: #8f98a0;
+      white-space: nowrap;
+    }
+    .stch-sidebar-value {
+      color: #fff;
+      text-align: right;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .stch-sidebar-progress {
+      height: 6px;
+      background: #0e1621;
+      border-radius: 6px;
+      overflow: hidden;
+      margin-top: 4px;
+      border: 1px solid #31445b;
+    }
+    .stch-sidebar-progress-bar {
+      height: 100%;
+      width: 0;
+      background: linear-gradient(90deg, #75b022, #66c0f4);
+    }
+    .stch-sidebar-status {
+      color: #8f98a0;
+      font-size: 12px;
+      margin-top: 9px;
+      line-height: 1.4;
+    }
+    .stch-sidebar-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 10px;
+    }
+    .stch-sidebar-refresh {
+      background: linear-gradient(to bottom, #67c1f5 5%, #417a9b 95%);
+      color: #fff;
+      border: 0;
+      border-radius: 2px;
+      cursor: pointer;
+      padding: 5px 10px;
+      font-size: 12px;
+    }
+    .stch-sidebar-refresh:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
     }
 
     #stch-backdrop {
@@ -1383,6 +1577,426 @@
     setTimeout(() => observer.disconnect(), 20000);
   }
 
+  function formatInt(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number.toLocaleString("zh-CN") : "—";
+  }
+
+  function parseIntLoose(value) {
+    const number = parseInt(String(value || "").replace(/[^\d]/g, ""), 10);
+    return Number.isFinite(number) ? number : 0;
+  }
+
+  function getFirstText(root, selectors) {
+    for (const selector of selectors) {
+      const text = root.querySelector(selector)?.textContent?.trim();
+      if (text) return text;
+    }
+    return "";
+  }
+
+  function getFirstAttr(root, selectors, attr) {
+    for (const selector of selectors) {
+      const value = root.querySelector(selector)?.getAttribute(attr);
+      if (value) return value;
+    }
+    return "";
+  }
+
+  function xpRequiredForLevel(level) {
+    let total = 0;
+    for (let current = 0; current < level; current++) {
+      total += (Math.floor(current / 10) + 1) * 100;
+    }
+    return total;
+  }
+
+  function xpStepForLevel(level) {
+    return (Math.floor(Math.max(0, level) / 10) + 1) * 100;
+  }
+
+  function parseSteamIdFromText(text) {
+    const direct = String(text || "").match(/(?:g_steamID\s*=\s*["']|"steamid"\s*:\s*")(\d{17})/);
+    if (direct) return direct[1];
+    return "";
+  }
+
+  function parseSteamIdFromProfileUrl(profileUrl) {
+    const match = String(profileUrl || "").match(/\/profiles\/(\d{17})(?:\/|$)/);
+    return match ? match[1] : "";
+  }
+
+  async function stchRequestText(url) {
+    if (typeof GM_xmlhttpRequest === "function") {
+      return new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method: "GET",
+          url,
+          timeout: 20000,
+          anonymous: false,
+          withCredentials: true,
+          onload: response => {
+            if (response.status >= 200 && response.status < 300) {
+              resolve(response.responseText || "");
+            } else {
+              reject(new Error(`HTTP ${response.status}`));
+            }
+          },
+          onerror: () => reject(new Error("网络请求失败")),
+          ontimeout: () => reject(new Error("网络请求超时")),
+        });
+      });
+    }
+
+    const response = await window.fetch(url, { credentials: "include" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.text();
+  }
+
+  async function stchRequestJson(url) {
+    const text = await stchRequestText(url);
+    try {
+      return JSON.parse(text || "{}");
+    } catch (_) {
+      throw new Error("返回内容不是 JSON");
+    }
+  }
+
+  async function resolveSidebarSteamId(profileUrl, badgeHtml) {
+    const known = getSteamId()
+      || parseSteamIdFromText(badgeHtml)
+      || parseSteamIdFromProfileUrl(profileUrl);
+    if (known) return known;
+
+    if (!profileUrl) return "";
+    try {
+      const xml = await stchRequestText(`${profileUrl}/?xml=1`);
+      const match = xml.match(/<steamID64>(\d{17})<\/steamID64>/);
+      return match ? match[1] : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function parseSidebarProfileInfo(doc, html, profileUrl, steamId) {
+    const bodyText = (doc.body?.innerText || doc.body?.textContent || "").replace(/\u00a0/g, " ");
+    const rawName = getFirstText(doc, [
+      ".profile_small_header_name > a",
+      ".profile_small_header_name",
+      ".profile_header .persona_name .actual_persona_name",
+      ".profile_header .persona_name_text_content",
+      ".actual_persona_name",
+      "#global_actions .persona",
+    ]) || getFirstText(document, ["#global_actions .persona"]);
+    const name = rawName.replace(/\s*».*$/, "").trim();
+    const avatar = getFirstAttr(doc, [
+      ".profile_small_header_avatar img",
+      ".profile_header .playerAvatar img",
+      ".playerAvatarAutoSizeInner img",
+      ".playerAvatar img",
+      "#global_actions .user_avatar img",
+    ], "src") || getFirstAttr(document, ["#global_actions .user_avatar img"], "src");
+
+    const level = parseIntLoose(getFirstText(doc, [
+      ".profile_xp_block .friendPlayerLevelNum",
+      ".friendPlayerLevelNum",
+    ]));
+
+    const xpMatches = [...bodyText.matchAll(/([\d,，]+)\s*(?:点经验值|XP)/gi)]
+      .map(match => parseIntLoose(match[1]))
+      .filter(Boolean);
+    const totalXp = xpMatches.length > 0 ? Math.max(...xpMatches) : 0;
+    let nextLevel = level ? level + 1 : 0;
+    let remainingXp = 0;
+    const zhNextMatch = bodyText.match(/升到\s*(\d+)\s*级还需\s*([\d,，]+)\s*点经验值/i);
+    const enNextMatch = bodyText.match(/([\d,，]+)\s*XP\s*(?:needed|required).*?Level\s*(\d+)/i);
+    if (zhNextMatch) {
+      nextLevel = parseIntLoose(zhNextMatch[1]) || nextLevel;
+      remainingXp = parseIntLoose(zhNextMatch[2]);
+    } else if (enNextMatch) {
+      remainingXp = parseIntLoose(enNextMatch[1]);
+      nextLevel = parseIntLoose(enNextMatch[2]) || nextLevel;
+    } else if (level && totalXp) {
+      remainingXp = Math.max(0, xpRequiredForLevel(level + 1) - totalXp);
+    }
+    const stepXp = level ? xpStepForLevel(level) : 0;
+    const earnedThisLevel = stepXp ? Math.max(0, stepXp - remainingXp) : 0;
+
+    return {
+      avatar,
+      name: name || "Steam 用户",
+      level,
+      totalXp,
+      nextLevel,
+      remainingXp,
+      stepXp,
+      earnedThisLevel,
+      profileUrl,
+      steamId,
+      html,
+    };
+  }
+
+  async function loadSidebarProfileInfo() {
+    const profileUrl = getProfileUrl();
+    if (!profileUrl) throw new Error("未找到个人资料地址");
+
+    let html = "";
+    if (location.hostname === "steamcommunity.com" && location.pathname.includes("/badges")) {
+      html = document.documentElement.outerHTML;
+    } else {
+      html = await stchRequestText(`${profileUrl}/badges/`);
+    }
+    const steamId = await resolveSidebarSteamId(profileUrl, html);
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    return parseSidebarProfileInfo(doc, html, profileUrl, steamId);
+  }
+
+  function isGemSackDescription(description) {
+    const hash = String(description?.market_hash_name || "").trim();
+    const name = String(description?.name || "").trim();
+    return hash === SIDEBAR_GEM_SACK_HASH
+      || /sack of gems/i.test(name)
+      || /宝石袋|袋装宝石/.test(name);
+  }
+
+  function isLooseGemDescription(description) {
+    const hash = String(description?.market_hash_name || "").trim();
+    const name = String(description?.name || "").trim();
+    const type = String(description?.type || "").trim();
+    if (isGemSackDescription(description)) return false;
+    return hash === "Gems"
+      || /^gems$/i.test(name)
+      || /^宝石$/.test(name)
+      || /steam gems?/i.test(type)
+      || /^宝石$/.test(type);
+  }
+
+  async function loadSidebarGemInfo(steamId) {
+    if (!steamId) throw new Error("未找到 SteamID，无法读取库存");
+
+    const language = unsafeWindow.g_strLanguage || "schinese";
+    let startAssetId = "";
+    let looseGems = 0;
+    let sackCount = 0;
+    let totalInventoryCount = 0;
+
+    do {
+      const params = new URLSearchParams({
+        l: language,
+        count: "2000",
+      });
+      if (startAssetId) params.set("start_assetid", startAssetId);
+      const data = await stchRequestJson(
+        `https://steamcommunity.com/inventory/${steamId}/753/6?${params.toString()}`
+      );
+      if (data?.success !== 1 && data?.success !== true) {
+        throw new Error(data?.Error || data?.error || "Steam 未返回库存数据");
+      }
+      totalInventoryCount = Number(data.total_inventory_count || totalInventoryCount) || totalInventoryCount;
+
+      const descriptions = new Map();
+      (Array.isArray(data.descriptions) ? data.descriptions : []).forEach(description => {
+        descriptions.set(getDescriptionKey(description), description);
+      });
+
+      for (const asset of Array.isArray(data.assets) ? data.assets : []) {
+        const description = descriptions.get(getDescriptionKey(asset));
+        const amount = getAssetAmount(asset);
+        if (isGemSackDescription(description)) {
+          sackCount += amount;
+        } else if (isLooseGemDescription(description)) {
+          looseGems += amount;
+        }
+      }
+
+      startAssetId = data.more_items && data.last_assetid
+        ? String(data.last_assetid)
+        : "";
+    } while (startAssetId);
+
+    return {
+      looseGems,
+      sackCount,
+      totalGems: looseGems + sackCount * GEM_SACK_SIZE,
+      totalInventoryCount,
+    };
+  }
+
+  async function loadSidebarGemPrice() {
+    const params = new URLSearchParams({
+      appid: "753",
+      currency: "23",
+      market_hash_name: SIDEBAR_GEM_SACK_HASH,
+    });
+    const data = await stchRequestJson(
+      `https://steamcommunity.com/market/priceoverview/?${params.toString()}`
+    );
+    const lowestCents = parsePrice(data?.lowest_price);
+    const medianCents = parsePrice(data?.median_price);
+    const priceCents = lowestCents || medianCents;
+    return {
+      priceCents,
+      source: lowestCents ? "在售最低" : medianCents ? "平均价格" : "暂无价格",
+      volume: parseInt(data?.volume, 10) || 0,
+    };
+  }
+
+  let sidebarLoading = false;
+  let sidebarData = {
+    profile: null,
+    gems: null,
+    gemPrice: null,
+    error: "",
+  };
+
+  function setSidebarText(id, text, title = "") {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text;
+    el.title = title || text;
+  }
+
+  function renderSidebar() {
+    const profile = sidebarData.profile || {};
+    const gems = sidebarData.gems || {};
+    const gemPrice = sidebarData.gemPrice || {};
+    const avatar = document.getElementById("stch-sidebar-avatar");
+    if (avatar && profile.avatar) avatar.src = profile.avatar;
+    const hasRemainingXp = Number.isFinite(Number(profile.remainingXp))
+      && Number.isFinite(Number(profile.stepXp))
+      && Number(profile.stepXp) > 0;
+    setSidebarText("stch-sidebar-name", profile.name || "Steam 用户");
+    setSidebarText("stch-sidebar-level", profile.level ? `Lv ${formatInt(profile.level)}` : "—");
+    setSidebarText("stch-sidebar-xp", profile.totalXp ? `${formatInt(profile.totalXp)} 点` : "—");
+    setSidebarText(
+      "stch-sidebar-next",
+      hasRemainingXp
+        ? `${formatInt(profile.remainingXp)} / ${formatInt(profile.stepXp)}`
+        : "—"
+    );
+
+    const progress = document.getElementById("stch-sidebar-progress-bar");
+    if (progress) {
+      const pct = profile.stepXp
+        ? Math.min(100, Math.max(0, (profile.earnedThisLevel / profile.stepXp) * 100))
+        : 0;
+      progress.style.width = `${pct}%`;
+    }
+
+    const gemText = Number.isFinite(gems.totalGems)
+      ? `${formatInt(gems.totalGems)} 宝石${gems.sackCount ? `（${formatInt(gems.sackCount)} 宝石袋）` : ""}`
+      : "—";
+    setSidebarText("stch-sidebar-gems", gemText);
+
+    const priceText = gemPrice.priceCents
+      ? `一袋 ¥${formatCNY(gemPrice.priceCents)}`
+      : "—";
+    const priceTitle = gemPrice.priceCents
+      ? `${gemPrice.source}${gemPrice.volume ? `，成交量 ${formatInt(gemPrice.volume)}` : ""}`
+      : "暂无宝石袋市场价格";
+    setSidebarText("stch-sidebar-gem-price", priceText, priceTitle);
+
+    const status = document.getElementById("stch-sidebar-status");
+    if (status) {
+      status.textContent = sidebarLoading
+        ? "正在刷新账号信息、库存宝石和市场价格..."
+        : sidebarData.error || (profile.name ? "已同步当前账号信息" : "鼠标移入侧栏后可查看账号摘要");
+    }
+    const refresh = document.getElementById("stch-sidebar-refresh");
+    if (refresh) refresh.disabled = sidebarLoading;
+  }
+
+  async function refreshSidebarData() {
+    if (sidebarLoading) return;
+    sidebarLoading = true;
+    sidebarData.error = "";
+    renderSidebar();
+    try {
+      const profile = await loadSidebarProfileInfo();
+      sidebarData.profile = profile;
+      renderSidebar();
+
+      const [gemsResult, priceResult] = await Promise.allSettled([
+        loadSidebarGemInfo(profile.steamId),
+        loadSidebarGemPrice(),
+      ]);
+      if (gemsResult.status === "fulfilled") {
+        sidebarData.gems = gemsResult.value;
+      } else {
+        sidebarData.error = gemsResult.reason?.message || "库存宝石读取失败";
+      }
+      if (priceResult.status === "fulfilled") {
+        sidebarData.gemPrice = priceResult.value;
+      } else if (!sidebarData.error) {
+        sidebarData.error = priceResult.reason?.message || "宝石价格读取失败";
+      }
+    } catch (error) {
+      sidebarData.error = error?.message || "侧栏信息读取失败";
+    } finally {
+      sidebarLoading = false;
+      renderSidebar();
+    }
+  }
+
+  function setSidebarPinned(pinned) {
+    const sidebar = document.getElementById("stch-sidebar");
+    if (!sidebar) return;
+    sidebar.classList.toggle("pinned", pinned);
+    GM_setValue(SIDEBAR_PINNED_KEY, !!pinned);
+    const pin = document.getElementById("stch-sidebar-pin");
+    if (pin) pin.textContent = pinned ? "收起" : "固定";
+  }
+
+  function injectSidebar() {
+    if (document.getElementById("stch-sidebar")) return;
+
+    const sidebar = document.createElement("aside");
+    sidebar.id = "stch-sidebar";
+    sidebar.innerHTML = `
+      <div class="stch-sidebar-panel">
+        <div class="stch-sidebar-head">
+          <img id="stch-sidebar-avatar" class="stch-sidebar-avatar" alt="">
+          <div style="min-width:0;flex:1;">
+            <div id="stch-sidebar-name" class="stch-sidebar-name">Steam 用户</div>
+            <div class="stch-sidebar-sub">账号摘要</div>
+          </div>
+          <button id="stch-sidebar-pin" class="stch-sidebar-pin" type="button">固定</button>
+        </div>
+        <div class="stch-sidebar-body">
+          <div class="stch-sidebar-row"><span class="stch-sidebar-key">当前等级</span><span id="stch-sidebar-level" class="stch-sidebar-value">—</span></div>
+          <div class="stch-sidebar-row"><span class="stch-sidebar-key">当前经验值</span><span id="stch-sidebar-xp" class="stch-sidebar-value">—</span></div>
+          <div class="stch-sidebar-row"><span class="stch-sidebar-key">距离下一级</span><span id="stch-sidebar-next" class="stch-sidebar-value">—</span></div>
+          <div class="stch-sidebar-progress"><div id="stch-sidebar-progress-bar" class="stch-sidebar-progress-bar"></div></div>
+          <div class="stch-sidebar-row"><span class="stch-sidebar-key">当前宝石</span><span id="stch-sidebar-gems" class="stch-sidebar-value">—</span></div>
+          <div class="stch-sidebar-row"><span class="stch-sidebar-key">宝石价格参考</span><span id="stch-sidebar-gem-price" class="stch-sidebar-value">—</span></div>
+          <div id="stch-sidebar-status" class="stch-sidebar-status">正在准备账号摘要...</div>
+          <div class="stch-sidebar-actions"><button id="stch-sidebar-refresh" class="stch-sidebar-refresh" type="button">刷新</button></div>
+        </div>
+      </div>
+      <div id="stch-sidebar-handle" class="stch-sidebar-handle" title="移入展开，点击固定">账号摘要</div>
+    `;
+    document.body.appendChild(sidebar);
+
+    const initialPinned = !!GM_getValue(SIDEBAR_PINNED_KEY, false);
+    setSidebarPinned(initialPinned);
+    document.getElementById("stch-sidebar-pin")?.addEventListener("click", event => {
+      event.stopPropagation();
+      setSidebarPinned(!sidebar.classList.contains("pinned"));
+    });
+    document.getElementById("stch-sidebar-handle")?.addEventListener("click", event => {
+      event.stopPropagation();
+      setSidebarPinned(!sidebar.classList.contains("pinned"));
+    });
+    document.getElementById("stch-sidebar-refresh")?.addEventListener("click", event => {
+      event.stopPropagation();
+      refreshSidebarData();
+    });
+
+    renderSidebar();
+    refreshSidebarData();
+  }
+
   let modalEl = null;
   const state = {
     cfg: loadConfig(),
@@ -1651,7 +2265,7 @@
         </div>
       </div>
       <div class="stch-footer">
-        <span class="stch-label">V1.6.1 · 默认货币：人民币(CNY)</span>
+        <span class="stch-label">V1.6.5 · 默认货币：人民币(CNY)</span>
       </div>
     `;
     document.body.appendChild(modal);
@@ -5768,9 +6382,15 @@
   if (pageUrl.includes("/market/multibuy")) {
     initWhenReady(initMultibuyAutoFill);
   } else if (isPointsShopPage()) {
-    initWhenReady(observePointsShopEntry);
+    initWhenReady(() => {
+      observePointsShopEntry();
+      injectSidebar();
+    });
   } else {
-    initWhenReady(injectEntryBtn);
+    initWhenReady(() => {
+      injectEntryBtn();
+      injectSidebar();
+    });
   }
 
 })();
